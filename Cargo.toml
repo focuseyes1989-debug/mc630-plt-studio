@@ -1,0 +1,24 @@
+[package]
+name = "mc630-plt-studio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = "3.6"
+eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
+rfd = "0.15"
+usvg = "0.45"
+roxmltree = "0.20"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+webbrowser = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+geo = { version = "0.33.1", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Registry", "Win32_Security", "Win32_UI_Shell"] }
+
+[profile.release]
+opt-level = 2
+strip = true

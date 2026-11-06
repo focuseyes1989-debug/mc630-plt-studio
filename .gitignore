@@ -1,0 +1,15 @@
+/target/
+/Backups/
+*.exe
+*.pdb
+*.mc630
+*.oxps
+/CAFE001.plt
+/failed-cut-*.jpg
+/video-contact-sheet.jpg
+/mc-manual-drive.html
+/examples/reference-working.plt
+/examples/REFERENCE-REEXPORT.plt
+/examples/A4-DEMO/test/
+/research/*
+!/research/CCD-FINDINGS.md

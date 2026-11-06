@@ -1,0 +1,179 @@
+impl A4Studio {
+    pub fn open_settings(&mut self) {
+        self.show_settings = true;
+    }
+    pub fn display_unit(&self) -> Unit {
+        self.unit
+    }
+    fn preferences(&self) -> Preferences {
+        let mut layout = self.layout.clone();
+        layout.custom.clear();
+        layout.hidden_images.clear();
+        layout.guides = Default::default();
+        if !layout.image_tiles.is_empty() {
+            layout.image_tiles.clear();
+            layout.count = 1;
+        }
+        Preferences {
+            reopen_last_project: self.reopen_last_project,
+            unit: self.unit,
+            layout,
+            ccd: self.ccd_trial,
+            profile: self.ccd_profile.clone(),
+            cut_shape: self.cut_shape,
+            remove_white: self.remove_white,
+            threshold: self.threshold,
+            background_tolerance: self.background_tolerance,
+            print_without_background: self.print_without_background,
+            rulers: self.rulers,
+            grid: self.grid,
+            show_cut: self.show_cut,
+            lock: self.lock,
+            preview_origin: self.preview_mark_origin,
+            nudge_fine: self.nudge_fine,
+            nudge_coarse: self.nudge_coarse,
+            zoom: self.zoom,
+            contour_rgba: self.contour_color.to_array(),
+            autosave_enabled: self.autosave_enabled,
+            autosave_seconds: self.autosave_seconds,
+        }
+    }
+    fn apply_preferences(&mut self, p: Preferences) {
+        self.reopen_last_project = p.reopen_last_project;
+        self.autosave_enabled = p.autosave_enabled;
+        self.autosave_seconds = p.autosave_seconds;
+        self.unit = p.unit;
+        self.layout = p.layout;
+        self.layout.custom.clear();
+        self.ccd_trial = p.ccd;
+        self.ccd_profile = p.profile;
+        self.cut_shape = p.cut_shape;
+        self.remove_white = p.remove_white;
+        self.threshold = p.threshold;
+        self.background_tolerance = p.background_tolerance;
+        self.print_without_background = p.print_without_background;
+        self.rulers = p.rulers;
+        self.grid = p.grid;
+        self.show_cut = p.show_cut;
+        self.lock = p.lock;
+        self.preview_mark_origin = p.preview_origin;
+        self.nudge_fine = p.nudge_fine;
+        self.nudge_coarse = p.nudge_coarse;
+        self.ratio = self.layout.width / self.layout.height;
+        self.zoom = p.zoom;
+        self.contour_color = egui::Color32::from_rgba_unmultiplied(
+            p.contour_rgba[0],
+            p.contour_rgba[1],
+            p.contour_rgba[2],
+            p.contour_rgba[3],
+        );
+        self.new_width = self.layout.page_width;
+        self.new_height = self.layout.page_height;
+    }
+    pub fn settings_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        let mut retrace = false;
+        egui::Window::new("Settings").open(&mut open).default_width(650.).default_height(680.).resizable(true).show(ctx,|ui| {
+            ui.heading("Application settings");
+            ui.small("Changes apply immediately. Save settings keeps defaults for the next launch; artwork and manual placements are not saved here.");
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("settings-scroll").max_height(540.).show(ui,|ui| {
+                egui::CollapsingHeader::new("General / measurement units").default_open(true).show(ui,|ui| {
+                    egui::ComboBox::from_id_salt("settings-unit").selected_text(match self.unit{Unit::Inches=>"Inches (default)",Unit::Cm=>"Centimetres",Unit::Mm=>"Millimetres"}).show_ui(ui,|ui|{
+                        ui.selectable_value(&mut self.unit,Unit::Inches,"Inches (in) - default");ui.selectable_value(&mut self.unit,Unit::Cm,"Centimetres (cm)");ui.selectable_value(&mut self.unit,Unit::Mm,"Millimetres (mm)");
+                    });
+                    ui.small("Applies to dimensions, positions, spacing, borders, rulers and vector output size. Changing units preserves physical size.");
+                    ui.checkbox(&mut self.reopen_last_project,"Reopen all project tabs on startup");
+                    if ui.button("Associate .mc630 project files with this app").clicked(){
+                        self.status=match std::env::current_exe().map_err(|e|e.to_string()).and_then(|exe|crate::file_association::register(&exe)){Ok(())=>"Registered .mc630 files for the current Windows user. If Windows asks, choose MC630 PLT Studio as the default app.".into(),Err(e)=>format!("Could not register project files: {e}")};
+                    }
+                    ui.small("Restores saved project tabs in order and the selected tab. Unsaved work uses Auto Save recovery. Use Save settings to keep this option.");
+                    ui.horizontal(|ui|{ui.label("Arrow key step");ui.add(self.unit.distance(&mut self.nudge_fine).range(0.001..=100.));});
+                    ui.horizontal(|ui|{ui.label("Shift + Arrow step");ui.add(self.unit.distance(&mut self.nudge_coarse).range(0.001..=100.));});
+                });
+                egui::CollapsingHeader::new("Auto Save / crash recovery").default_open(true).show(ui,|ui|{
+                    ui.checkbox(&mut self.autosave_enabled,"Enable Auto Save recovery");
+                    ui.horizontal(|ui|{ui.label("Maximum interval");ui.add(egui::DragValue::new(&mut self.autosave_seconds).range(5..=300).suffix(" seconds"));});
+                    ui.small("Saves after 2 seconds idle, or by the maximum interval while editing. Recovery uses a separate file; your saved project is never overwritten.");
+                    ui.small(format!("Recovery folder: {}",crate::recovery::root().display()));
+                    if let Some(at)=self.autosave.succeeded_at{ui.small(format!("Last successful Auto Save: {} seconds ago",at.elapsed().as_secs()));}
+                    if let Some(problem)=&self.autosave.problem{ui.colored_label(egui::Color32::from_rgb(180,60,30),problem);}
+                });
+                egui::CollapsingHeader::new("Document / paper").show(ui,|ui| {
+                    egui::ComboBox::from_id_salt("settings-paper").selected_text(self.layout.paper_label()).show_ui(ui,|ui|{
+                        for &(name,w,h) in sheet::PAPER_PRESETS {
+                            if ui.selectable_label(false,format!("{name}  {}",self.unit.size(w,h))).clicked(){self.layout.page_width=w;self.layout.page_height=h;}
+                        }
+                    });
+                    ui.horizontal(|ui|{if ui.button("Swap portrait / landscape").clicked(){std::mem::swap(&mut self.layout.page_width,&mut self.layout.page_height);}});
+                    ui.horizontal(|ui|{ui.label("Paper width");ui.add(self.unit.distance(&mut self.layout.page_width).range(50.0..=630.));});
+                    ui.horizontal(|ui|{ui.label("Paper height");ui.add(self.unit.distance(&mut self.layout.page_height).range(50.0..=2000.));});
+                    ui.small("Match the selected paper and orientation in Printing Preferences before printing.");
+                });
+                egui::CollapsingHeader::new("Layout / repeat / spacing").show(ui,|ui| {
+                    egui::Grid::new("settings-layout").num_columns(2).show(ui,|ui| {
+                        ui.label("Image width");ui.add(self.unit.distance(&mut self.layout.width).range(1.0..=self.layout.page_width));ui.end_row();
+                        ui.label("Image height");ui.add(self.unit.distance(&mut self.layout.height).range(1.0..=self.layout.page_height));ui.end_row();
+                        ui.label("Copies");ui.add_enabled(self.layout.image_tiles.is_empty(), egui::DragValue::new(&mut self.layout.count).range(1..=1000));ui.end_row();
+                        ui.label("Column spacing");ui.add(self.unit.distance(&mut self.layout.column_gap).range(0.0..=100.));ui.end_row();
+                        ui.label("Row spacing");ui.add(self.unit.distance(&mut self.layout.row_gap).range(0.0..=100.));ui.end_row();
+                        ui.label("Page margin");ui.add(self.unit.distance(&mut self.layout.margin).range(5.0..=100.));ui.end_row();
+                    });
+                    ui.checkbox(&mut self.lock,"Lock proportions for resize");
+                    ui.small("Repeat defaults affect grid copies. Manually moved/resized copies retain their placements.");
+                });
+                egui::CollapsingHeader::new("Artwork / background / cut shape").show(ui,|ui| {
+                    egui::ComboBox::from_id_salt("settings-shape").selected_text(self.cut_shape.label()).show_ui(ui,|ui| {
+                        for shape in [sheet::CutShape::AlphaOutline,sheet::CutShape::ImageFrame,sheet::CutShape::PlainBackgroundObject,sheet::CutShape::Ellipse] {retrace|=ui.selectable_value(&mut self.cut_shape,shape,shape.label()).changed();}
+                    });
+                    retrace|=ui.checkbox(&mut self.remove_white,"Remove white background").changed();
+                    retrace|=ui.add(egui::Slider::new(&mut self.threshold,180..=254).text("White threshold")).changed();
+                    retrace|=ui.add(egui::Slider::new(&mut self.background_tolerance,0..=100).text("Background tolerance")).changed();
+                    retrace|=ui.checkbox(&mut self.print_without_background,"Print without background").changed();
+                });
+                egui::CollapsingHeader::new("Cut outline / smoothing").show(ui,|ui| {
+                    ui.horizontal(|ui|{ui.label("Outline smoothing");ui.add(self.unit.slider(&mut self.layout.smoothing,0.0..=4.0));});
+                    ui.horizontal(|ui|{ui.label("Outline distance");ui.add(self.unit.distance(&mut self.layout.contour_offset).range(-5.0..=5.0));});
+                    ui.checkbox(&mut self.layout.cut_inner_holes,"Cut inner holes");ui.checkbox(&mut self.show_cut,"Show cut outlines");
+                    ui.small("Positive distance expands the cut; smoothing softens details. Force and speed remain controlled by the cutter machine.");
+                });
+                egui::CollapsingHeader::new("Registration / CCD / calibration").show(ui,|ui| {
+                    ui.checkbox(&mut self.ccd_trial,"CCD camera - four dots");
+                    ui.horizontal(|ui|{ui.label("Dot diameter");ui.add(self.unit.distance(&mut self.ccd_profile.diameter).range(1.0..=10.0));});
+                    ui.horizontal(|ui|{ui.label("Dot centre gap");ui.add(self.unit.distance(&mut self.ccd_profile.inset).range(5.0..=30.0));});
+                    ui.add_enabled_ui(!self.ccd_trial,|ui| {
+                        ui.horizontal(|ui|{ui.label("X offset");ui.add(self.unit.distance(&mut self.layout.offset_x).range(-self.layout.page_width..=self.layout.page_width));});
+                        ui.horizontal(|ui|{ui.label("Y offset");ui.add(self.unit.distance(&mut self.layout.offset_y).range(-self.layout.page_height..=self.layout.page_height));});
+                        ui.checkbox(&mut self.layout.flip_x,"Flip X");ui.checkbox(&mut self.layout.flip_y,"Flip Y");
+                        ui.horizontal(|ui|{ui.label("Plotter units per mm");ui.add(egui::DragValue::new(&mut self.layout.units).range(1.0..=1000.));});
+                    });
+                    ui.checkbox(&mut self.preview_mark_origin,"Preview origin at registration mark");
+                    ui.small("CCD origin is the top-left dot. Plotter units per mm is machine calibration, independent of the display unit.");
+                });
+                egui::CollapsingHeader::new("View / canvas").show(ui,|ui| {
+                    ui.checkbox(&mut self.rulers,"Show rulers");ui.checkbox(&mut self.grid,"Show grid");
+                    ui.add(egui::Slider::new(&mut self.zoom,0.5..=16.0).custom_formatter(|v,_|format!("{:.0}%",v*100.)).text("Zoom"));
+                    ui.color_edit_button_srgba(&mut self.contour_color);
+                    if ui.button("Fit page / reset view").clicked(){self.zoom=1.;self.canvas_pan=egui::Vec2::ZERO;}
+                });
+                egui::CollapsingHeader::new("Printing / printer preferences").show(ui,|ui| {
+                    #[cfg(windows)] self.print_panel.ui(ui,self.art.as_ref(),&self.layout,if self.ccd_trial{Some(&self.ccd_profile)}else{None},&mut self.status);
+                    ui.small("Use Actual size / 100%. Printer driver preferences are managed by the printer dialog.");
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save settings").clicked(){match self.preferences().save(){Ok(())=>self.status=format!("Settings saved: {}",crate::preferences::path().display()),Err(e)=>self.status=format!("Cannot save settings: {e}")}}
+                if ui.button("Close").clicked(){close=true;}
+            });
+        });
+        if retrace && !self.source.is_empty() {
+            self.retrace(ctx);
+        }
+        self.show_settings = open && !close;
+    }
+}
