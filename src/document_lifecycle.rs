@@ -108,7 +108,7 @@ impl A4Studio {
         }
         let mut choice = None;
         let modal = egui::Modal::new(egui::Id::new("unsaved-project")).show(ctx, |ui| {
-            ui.set_width(440.);
+            ui.set_width(306.);
             ui.heading("Save changes?");
             ui.add_space(8.);
             let name = self
@@ -117,18 +117,17 @@ impl A4Studio {
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Untitled project".into());
-            ui.label(format!("{name} has unsaved changes."));
-            ui.label("Save your image, layout and settings before continuing?");
-            ui.add_space(16.);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    choice = Some(UnsavedChoice::Save);
+            ui.add(egui::Label::new(egui::RichText::new(name).weak()).truncate());
+            ui.add_space(10.);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_sized([80., 28.], egui::Button::new("Cancel")).clicked() {
+                    choice = Some(UnsavedChoice::Cancel);
                 }
-                if ui.button("Don't Save").clicked() {
+                if ui.add_sized([90., 28.], egui::Button::new("Don't Save")).clicked() {
                     choice = Some(UnsavedChoice::Discard);
                 }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(UnsavedChoice::Cancel);
+                if ui.add_sized([80., 28.], egui::Button::new("Save").fill(ui.visuals().selection.bg_fill)).clicked() {
+                    choice = Some(UnsavedChoice::Save);
                 }
             });
         });

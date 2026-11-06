@@ -889,11 +889,20 @@ fn main() -> eframe::Result {
         return result.map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e))));
     }
     let launch_project = file_association::project_argument(std::env::args_os().skip(1));
+    let icon = image::load_from_memory(include_bytes!("../assets/studio-icon.png"))
+        .expect("valid embedded Studio icon")
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
     eframe::run_native(
         "MC630 PLT Studio",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             viewport: egui::ViewportBuilder::default()
+                .with_icon(egui::IconData {
+                    rgba: icon.into_raw(),
+                    width,
+                    height,
+                })
                 .with_inner_size([1360., 900.])
                 .with_min_inner_size([1080., 740.]),
 

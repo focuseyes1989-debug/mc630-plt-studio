@@ -264,7 +264,7 @@ pub struct A4Studio {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::from_rgb(0,150,100),selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -470,6 +470,84 @@ impl A4Studio {
         true
     }
 
+    fn draw_fixed_rulers(
+        &self,
+        painter: &egui::Painter,
+        area: egui::Rect,
+        page: egui::Rect,
+        scale: f32,
+    ) {
+        let ruler = egui::Color32::from_rgb(246, 246, 246);
+        let ink = egui::Color32::from_gray(85);
+        painter.rect_filled(
+            egui::Rect::from_min_max(area.min, egui::pos2(area.right(), area.top() + 23.)),
+            0.,
+            ruler,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_max(area.min, egui::pos2(area.left() + 28., area.bottom())),
+            0.,
+            ruler,
+        );
+        let ticks = crate::ruler::RulerScale::new(self.unit, scale as f64);
+        let clip = painter.clip_rect().intersect(area);
+        for tick in ticks.visible(
+            ((clip.left().max(area.left() + 28.) - page.left()) / scale) as f64,
+            ((clip.right() - page.left()) / scale) as f64,
+            self.layout.page_width,
+        ) {
+            let mm = tick as f64 * ticks.step_mm;
+            let x = page.left() + mm as f32 * scale;
+            painter.line_segment(
+                [
+                    egui::pos2(x, area.top() + 23. - ticks.length(tick)),
+                    egui::pos2(x, area.top() + 23.),
+                ],
+                egui::Stroke::new(0.7_f32, ink),
+            );
+            if ticks.labeled(tick) {
+                painter.text(
+                    egui::pos2(x + 2., area.top() + 2.),
+                    egui::Align2::LEFT_TOP,
+                    self.unit.number(mm),
+                    egui::FontId::proportional(9.),
+                    ink,
+                );
+            }
+        }
+        for tick in ticks.visible(
+            ((clip.top().max(area.top() + 23.) - page.top()) / scale) as f64,
+            ((clip.bottom() - page.top()) / scale) as f64,
+            self.layout.page_height,
+        ) {
+            let mm = tick as f64 * ticks.step_mm;
+            let y = page.top() + mm as f32 * scale;
+            painter.line_segment(
+                [
+                    egui::pos2(area.left() + 28. - ticks.length(tick), y),
+                    egui::pos2(area.left() + 28., y),
+                ],
+                egui::Stroke::new(0.7_f32, ink),
+            );
+            if ticks.labeled(tick) {
+                painter.text(
+                    egui::pos2(area.left() + 2., y - 2.),
+                    egui::Align2::LEFT_BOTTOM,
+                    self.unit.number(mm),
+                    egui::FontId::proportional(9.),
+                    ink,
+                );
+            }
+        }
+        painter.text(
+            area.min + egui::vec2(3., 3.),
+            egui::Align2::LEFT_TOP,
+            self.unit.label(),
+            egui::FontId::proportional(9.),
+            ink,
+        );
+    }
+
     fn draw_ruler_guides(
         &self,
         painter: &egui::Painter,
@@ -530,7 +608,7 @@ impl A4Studio {
                     Some(ctx.load_texture("sticker", image, egui::TextureOptions::LINEAR));
 
                 self.status = format!(
-                    "{} outer contours, {} inner holes. Check green paths before export.",
+                    "{} outer contours, {} inner holes. Check cut paths before export.",
                     a.outlines.len(),
                     a.holes.len()
                 );
@@ -2084,7 +2162,7 @@ impl A4Studio {
                             for color in [
                                 egui::Color32::BLACK,
                                 egui::Color32::GRAY,
-                                egui::Color32::from_rgb(0, 150, 100),
+                                egui::Color32::from_rgb(0, 135, 85),
                                 egui::Color32::BLUE,
                                 egui::Color32::RED,
                                 egui::Color32::from_rgb(130, 50, 170),
@@ -2482,379 +2560,323 @@ impl A4Studio {
                     .on_hover_text("Hold Ctrl and use the mouse wheel to zoom");
             });
         self.properties_sidebar(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(problem) = &self.autosave.problem {
-                ui.colored_label(egui::Color32::DARK_RED, "Auto Save unavailable")
-                    .on_hover_text(problem);
-            }
-            let viewport = ui.available_size();
-            let viewport_rect = egui::Rect::from_min_size(ui.cursor().min, viewport);
-            let space = ctx.input(|i| i.key_down(egui::Key::Space)) && !ctx.wants_keyboard_input();
-            let pointer_over = ui.rect_contains_pointer(viewport_rect);
-            let wheel = if pointer_over {
-                ctx.input_mut(|i| {
-                    if i.modifiers.ctrl {
-                        let delta = i.raw_scroll_delta.y;
-                        i.raw_scroll_delta = egui::Vec2::ZERO;
-                        i.smooth_scroll_delta = egui::Vec2::ZERO;
-                        delta
-                    } else {
-                        0.
-                    }
-                })
-            } else {
-                0.
-            };
-            let old_zoom = self.zoom;
-            if wheel != 0. {
-                self.zoom = (self.zoom * (wheel * 0.003).exp()).clamp(0.5, 16.);
-            }
-            if space
-                && pointer_over
-                && ctx.input(|i| i.pointer.primary_pressed())
-                && self.drag.is_none()
-            {
-                self.panning = true;
-            }
-            let pan_gesture = self.panning || (space && pointer_over);
-            if self.panning {
-                self.canvas_pan += ctx.input(|i| i.pointer.delta());
-                if !ctx.input(|i| i.pointer.primary_down()) {
-                    self.panning = false;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0))
+            .show(ctx, |ui| {
+                if let Some(problem) = &self.autosave.problem {
+                    ui.colored_label(egui::Color32::DARK_RED, "Auto Save unavailable")
+                        .on_hover_text(problem);
                 }
-            }
-            if pan_gesture {
-                ctx.set_cursor_icon(if self.panning {
-                    egui::CursorIcon::Grabbing
+                let viewport = ui.available_size();
+                let viewport_rect = egui::Rect::from_min_size(ui.cursor().min, viewport);
+                let space =
+                    ctx.input(|i| i.key_down(egui::Key::Space)) && !ctx.wants_keyboard_input();
+                let pointer_over = ui.rect_contains_pointer(viewport_rect);
+                let wheel = if pointer_over {
+                    ctx.input_mut(|i| {
+                        if i.modifiers.ctrl {
+                            let delta = i.raw_scroll_delta.y;
+                            i.raw_scroll_delta = egui::Vec2::ZERO;
+                            i.smooth_scroll_delta = egui::Vec2::ZERO;
+                            delta
+                        } else {
+                            0.
+                        }
+                    })
                 } else {
-                    egui::CursorIcon::Grab
-                });
-            }
-            egui::ScrollArea::both()
-                .drag_to_scroll(false)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let canvas_size = viewport * self.zoom.max(1.);
-                    let (area, canvas_response) =
-                        ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
-                    let painter = ui.painter_at(area);
-
-                    painter.rect_filled(area, 0., egui::Color32::from_rgb(225, 228, 233));
-
-                    let scale = ((viewport.x - 90.) / self.layout.page_width as f32)
-                        .min((viewport.y - 80.) / self.layout.page_height as f32)
-                        .max(0.01)
-                        * self.zoom;
-                    if self.zoom != old_zoom {
-                        if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                            let old_center = area.min
-                                + viewport * old_zoom.max(1.) * 0.5
-                                + egui::vec2(14., 12.)
-                                + self.canvas_pan;
-                            let new_center = area.center() + egui::vec2(14., 12.) + self.canvas_pan;
-                            self.canvas_pan += pointer
-                                + (old_center - pointer) * (self.zoom / old_zoom)
-                                - new_center;
-                        }
+                    0.
+                };
+                let old_zoom = self.zoom;
+                if wheel != 0. {
+                    self.zoom = (self.zoom * (wheel * 0.003).exp()).clamp(0.5, 16.);
+                }
+                if space
+                    && pointer_over
+                    && ctx.input(|i| i.pointer.primary_pressed())
+                    && self.drag.is_none()
+                {
+                    self.panning = true;
+                }
+                let pan_gesture = self.panning || (space && pointer_over);
+                if self.panning {
+                    self.canvas_pan += ctx.input(|i| i.pointer.delta());
+                    if !ctx.input(|i| i.pointer.primary_down()) {
+                        self.panning = false;
                     }
-                    let page = egui::Rect::from_center_size(
-                        area.center() + egui::vec2(14., 12.) + self.canvas_pan,
-                        egui::vec2(
-                            self.layout.page_width as f32 * scale,
-                            self.layout.page_height as f32 * scale,
-                        ),
-                    );
-                    painter.rect_filled(
-                        page.translate(egui::vec2(4., 6.)),
-                        2.,
-                        egui::Color32::from_gray(180),
-                    );
+                }
+                if pan_gesture {
+                    ctx.set_cursor_icon(if self.panning {
+                        egui::CursorIcon::Grabbing
+                    } else {
+                        egui::CursorIcon::Grab
+                    });
+                }
+                let canvas = egui::ScrollArea::both()
+                    .drag_to_scroll(false)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let canvas_size = viewport * self.zoom.max(1.);
+                        let (area, canvas_response) =
+                            ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
+                        let painter = ui.painter_at(area);
 
-                    painter.rect_filled(page, 0., egui::Color32::WHITE);
-                    painter.rect_stroke(
-                        page,
-                        0.,
-                        egui::Stroke::new(1_f32, egui::Color32::BLACK),
-                        egui::StrokeKind::Outside,
-                    );
-                    if self.show_margin_guides {
-                        let inset = self.layout.margin as f32 * scale;
-                        let guide = page.shrink(inset);
-                        if guide.is_positive() {
-                            painter.rect_stroke(
-                                guide,
-                                0.,
-                                egui::Stroke::new(0.7_f32, egui::Color32::from_rgb(174, 126, 174)),
-                                egui::StrokeKind::Inside,
-                            );
+                        painter.rect_filled(area, 0., egui::Color32::from_rgb(225, 228, 233));
+
+                        let scale = ((viewport.x - 90.) / self.layout.page_width as f32)
+                            .min((viewport.y - 80.) / self.layout.page_height as f32)
+                            .max(0.01)
+                            * self.zoom;
+                        if self.zoom != old_zoom {
+                            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                                let old_center = area.min
+                                    + viewport * old_zoom.max(1.) * 0.5
+                                    + egui::vec2(14., 12.)
+                                    + self.canvas_pan;
+                                let new_center =
+                                    area.center() + egui::vec2(14., 12.) + self.canvas_pan;
+                                self.canvas_pan += pointer
+                                    + (old_center - pointer) * (self.zoom / old_zoom)
+                                    - new_center;
+                            }
                         }
-                    }
-                    if self.grid {
-                        let grid = egui::Color32::from_rgb(228, 232, 235);
-                        for x in (0..=self.layout.page_width as u32).step_by(10) {
-                            let px = page.left() + x as f32 * scale;
-                            painter.line_segment(
-                                [egui::pos2(px, page.top()), egui::pos2(px, page.bottom())],
-                                egui::Stroke::new(0.5_f32, grid),
-                            );
-                        }
-                        for y in (0..=self.layout.page_height as u32).step_by(10) {
-                            let py = page.top() + y as f32 * scale;
-                            painter.line_segment(
-                                [egui::pos2(page.left(), py), egui::pos2(page.right(), py)],
-                                egui::Stroke::new(0.5_f32, grid),
-                            );
-                        }
-                    }
-                    if self.art.is_none() {
-                        painter.text(
-                            page.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "Your artwork goes here\nChoose an image or load the sample",
-                            egui::FontId::proportional(15.),
-                            egui::Color32::from_rgb(100, 116, 139),
+                        let page = egui::Rect::from_center_size(
+                            area.center() + egui::vec2(14., 12.) + self.canvas_pan,
+                            egui::vec2(
+                                self.layout.page_width as f32 * scale,
+                                self.layout.page_height as f32 * scale,
+                            ),
                         );
-                    }
+                        painter.rect_filled(
+                            page.translate(egui::vec2(4., 6.)),
+                            2.,
+                            egui::Color32::from_gray(180),
+                        );
 
-                    let pos =
-                        |x: f64, y: f64| page.min + egui::vec2(x as f32 * scale, y as f32 * scale);
+                        painter.rect_filled(page, 0., egui::Color32::WHITE);
+                        painter.rect_stroke(
+                            page,
+                            0.,
+                            egui::Stroke::new(1_f32, egui::Color32::BLACK),
+                            egui::StrokeKind::Outside,
+                        );
+                        if self.show_margin_guides {
+                            let inset = self.layout.margin as f32 * scale;
+                            let guide = page.shrink(inset);
+                            if guide.is_positive() {
+                                painter.rect_stroke(
+                                    guide,
+                                    0.,
+                                    egui::Stroke::new(
+                                        0.7_f32,
+                                        egui::Color32::from_rgb(174, 126, 174),
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                        }
+                        if self.grid {
+                            let grid = egui::Color32::from_rgb(228, 232, 235);
+                            for x in (0..=self.layout.page_width as u32).step_by(10) {
+                                let px = page.left() + x as f32 * scale;
+                                painter.line_segment(
+                                    [egui::pos2(px, page.top()), egui::pos2(px, page.bottom())],
+                                    egui::Stroke::new(0.5_f32, grid),
+                                );
+                            }
+                            for y in (0..=self.layout.page_height as u32).step_by(10) {
+                                let py = page.top() + y as f32 * scale;
+                                painter.line_segment(
+                                    [egui::pos2(page.left(), py), egui::pos2(page.right(), py)],
+                                    egui::Stroke::new(0.5_f32, grid),
+                                );
+                            }
+                        }
+                        if self.art.is_none() {
+                            painter.text(
+                                page.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Your artwork goes here\nChoose an image or load the sample",
+                                egui::FontId::proportional(15.),
+                                egui::Color32::from_rgb(100, 116, 139),
+                            );
+                        }
 
-                    let view = painter.clip_rect().intersect(viewport_rect);
-                    let guide_gesture =
-                        self.update_ruler_guides(ui, view, page, scale, pan_gesture);
-                    if !pan_gesture && !guide_gesture {
-                        self.canvas_edit(ui, &canvas_response, page, scale);
-                    }
-                    match self.layout.items() {
-                        Ok(positions) => {
-                            if let (Some(texture), Some(a)) = (&self.texture, &self.art) {
-                                for (i, p) in positions.into_iter().enumerate() {
-                                    if self.layout.hidden_images.contains(&i) {
-                                        continue;
+                        let pos = |x: f64, y: f64| {
+                            page.min + egui::vec2(x as f32 * scale, y as f32 * scale)
+                        };
+
+                        let view = viewport_rect;
+                        let guide_gesture =
+                            self.update_ruler_guides(ui, view, page, scale, pan_gesture);
+                        if !pan_gesture && !guide_gesture {
+                            self.canvas_edit(ui, &canvas_response, page, scale);
+                        }
+                        match self.layout.items() {
+                            Ok(positions) => {
+                                if let (Some(texture), Some(a)) = (&self.texture, &self.art) {
+                                    for (i, p) in positions.into_iter().enumerate() {
+                                        if self.layout.hidden_images.contains(&i) {
+                                            continue;
+                                        }
+                                        let r = egui::Rect::from_min_size(
+                                            pos(p.x, p.y),
+                                            egui::vec2(
+                                                p.width as f32 * scale,
+                                                p.height as f32 * scale,
+                                            ),
+                                        );
+
+                                        let uv = self.image_uv(i, a);
+                                        painter.image(texture.id(), r, uv, egui::Color32::WHITE);
                                     }
-                                    let r = egui::Rect::from_min_size(
-                                        pos(p.x, p.y),
-                                        egui::vec2(p.width as f32 * scale, p.height as f32 * scale),
-                                    );
 
-                                    let uv = self.image_uv(i, a);
-                                    painter.image(texture.id(), r, uv, egui::Color32::WHITE);
-                                }
+                                    if self.show_cut {
+                                        let mut preview_layout = self.layout.clone();
 
-                                if self.show_cut {
-                                    let mut preview_layout = self.layout.clone();
+                                        if self.ccd_trial {
+                                            preview_layout.offset_x =
+                                                -self.ccd_profile.origin(&self.layout)[0];
 
-                                    if self.ccd_trial {
-                                        preview_layout.offset_x =
-                                            -self.ccd_profile.origin(&self.layout)[0];
+                                            preview_layout.offset_y =
+                                                -self.ccd_profile.origin(&self.layout)[1];
+                                        }
 
-                                        preview_layout.offset_y =
-                                            -self.ccd_profile.origin(&self.layout)[1];
-                                    }
-
-                                    let stale = self.preview_cache.as_ref().is_none_or(|c| {
-                                        c.layout != preview_layout
-                                            || c.ccd != self.ccd_trial
-                                            || c.profile != self.ccd_profile
-                                    });
-                                    if stale {
-                                        let paths = if self.ccd_trial {
-                                            self.ccd_profile.cut_paths_cached(
-                                                &self.layout,
-                                                a,
-                                                &mut self.outline_cache,
-                                            )
-                                        } else {
-                                            preview_layout
-                                                .cut_paths_cached(a, &mut self.outline_cache)
-                                        };
-                                        self.preview_cache = Some(PreviewCache {
-                                            layout: preview_layout,
-                                            ccd: self.ccd_trial,
-                                            profile: self.ccd_profile.clone(),
-                                            paths,
+                                        let stale = self.preview_cache.as_ref().is_none_or(|c| {
+                                            c.layout != preview_layout
+                                                || c.ccd != self.ccd_trial
+                                                || c.profile != self.ccd_profile
                                         });
-                                    }
-                                    let origin = if self.preview_mark_origin {
-                                        sheet::LOWER_LEFT_MARK
-                                    } else {
-                                        [0., 0.]
-                                    };
-                                    let dot = self.ccd_profile.marks(&self.layout)[0];
-                                    match &self.preview_cache.as_ref().unwrap().paths {
-                                        Ok(paths) => {
-                                            for path in paths {
-                                                painter.add(egui::Shape::line(
-                                                    path.iter()
-                                                        .map(|p| {
-                                                            let q = if self.ccd_trial {
-                                                                [dot[0] + p[0], dot[1] + p[1]]
-                                                            } else {
-                                                                sheet::cutter_to_page_on(
-                                                                    *p,
-                                                                    origin,
-                                                                    self.layout.page_height,
-                                                                )
-                                                            };
+                                        if stale {
+                                            let paths = if self.ccd_trial {
+                                                self.ccd_profile.cut_paths_cached(
+                                                    &self.layout,
+                                                    a,
+                                                    &mut self.outline_cache,
+                                                )
+                                            } else {
+                                                preview_layout
+                                                    .cut_paths_cached(a, &mut self.outline_cache)
+                                            };
+                                            self.preview_cache = Some(PreviewCache {
+                                                layout: preview_layout,
+                                                ccd: self.ccd_trial,
+                                                profile: self.ccd_profile.clone(),
+                                                paths,
+                                            });
+                                        }
+                                        let origin = if self.preview_mark_origin {
+                                            sheet::LOWER_LEFT_MARK
+                                        } else {
+                                            [0., 0.]
+                                        };
+                                        let dot = self.ccd_profile.marks(&self.layout)[0];
+                                        match &self.preview_cache.as_ref().unwrap().paths {
+                                            Ok(paths) => {
+                                                for path in paths {
+                                                    painter.add(egui::Shape::line(
+                                                        path.iter()
+                                                            .map(|p| {
+                                                                let q = if self.ccd_trial {
+                                                                    [dot[0] + p[0], dot[1] + p[1]]
+                                                                } else {
+                                                                    sheet::cutter_to_page_on(
+                                                                        *p,
+                                                                        origin,
+                                                                        self.layout.page_height,
+                                                                    )
+                                                                };
 
-                                                            pos(q[0], q[1])
-                                                        })
-                                                        .collect(),
-                                                    egui::Stroke::new(1.0_f32, self.contour_color),
-                                                ));
+                                                                pos(q[0], q[1])
+                                                            })
+                                                            .collect(),
+                                                        egui::Stroke::new(
+                                                            1.0_f32,
+                                                            self.contour_color,
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+
+                                            Err(e) => {
+                                                ui.label(
+                                                    egui::RichText::new(e)
+                                                        .color(egui::Color32::RED),
+                                                );
                                             }
                                         }
-
-                                        Err(e) => {
-                                            ui.label(
-                                                egui::RichText::new(e).color(egui::Color32::RED),
-                                            );
-                                        }
                                     }
                                 }
                             }
-                        }
 
-                        Err(e) => {
-                            painter.text(
-                                area.center(),
-                                egui::Align2::CENTER_CENTER,
-                                e,
-                                egui::FontId::proportional(15.),
-                                egui::Color32::RED,
-                            );
-                        }
-                    }
-
-                    if self.ccd_trial && self.layout.has_visible_images() {
-                        for p in self.ccd_profile.marks(&self.layout) {
-                            painter.circle_filled(
-                                pos(p[0], p[1]),
-                                self.ccd_profile.diameter as f32 / 2. * scale,
-                                egui::Color32::BLACK,
-                            );
-                        }
-                    } else if !self.ccd_trial {
-                        for (x, y) in self.layout.manual_marks() {
-                            painter.line_segment(
-                                [pos(x - 2., y), pos(x + 2., y)],
-                                egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
-                            );
-
-                            painter.line_segment(
-                                [pos(x, y - 2.), pos(x, y + 2.)],
-                                egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
-                            );
-                        }
-                    }
-
-                    let origin = if self.ccd_trial {
-                        self.ccd_profile.origin(&self.layout)
-                    } else if self.preview_mark_origin {
-                        sheet::LOWER_LEFT_MARK
-                    } else {
-                        [0., 0.]
-                    };
-
-                    let q = sheet::cutter_to_page_on([0., 0.], origin, self.layout.page_height);
-
-                    let origin_pos = pos(q[0], q[1]);
-
-                    painter.circle_stroke(
-                        origin_pos,
-                        5.,
-                        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(240, 145, 0)),
-                    );
-
-                    painter.text(
-                        origin_pos + egui::vec2(9., -8.),
-                        egui::Align2::LEFT_BOTTOM,
-                        "Origin (0,0)",
-                        egui::FontId::proportional(10.),
-                        egui::Color32::from_rgb(170, 95, 0),
-                    );
-                    self.draw_selection(&painter, page, scale);
-                    self.draw_ruler_guides(&painter, view, page, scale);
-                    let area = view;
-                    if self.rulers {
-                        let ruler = egui::Color32::from_rgb(246, 246, 246);
-                        let ink = egui::Color32::from_gray(85);
-                        painter.rect_filled(
-                            egui::Rect::from_min_max(
-                                area.min,
-                                egui::pos2(area.right(), area.top() + 23.),
-                            ),
-                            0.,
-                            ruler,
-                        );
-                        painter.rect_filled(
-                            egui::Rect::from_min_max(
-                                area.min,
-                                egui::pos2(area.left() + 28., area.bottom()),
-                            ),
-                            0.,
-                            ruler,
-                        );
-                        let ticks = crate::ruler::RulerScale::new(self.unit, scale as f64);
-                        let clip = painter.clip_rect().intersect(area);
-                        for tick in ticks.visible(
-                            ((clip.left().max(area.left() + 28.) - page.left()) / scale) as f64,
-                            ((clip.right() - page.left()) / scale) as f64,
-                            self.layout.page_width,
-                        ) {
-                            let mm = tick as f64 * ticks.step_mm;
-                            let x = page.left() + mm as f32 * scale;
-                            painter.line_segment(
-                                [
-                                    egui::pos2(x, area.top() + 23. - ticks.length(tick)),
-                                    egui::pos2(x, area.top() + 23.),
-                                ],
-                                egui::Stroke::new(0.7_f32, ink),
-                            );
-                            if ticks.labeled(tick) {
+                            Err(e) => {
                                 painter.text(
-                                    egui::pos2(x + 2., area.top() + 2.),
-                                    egui::Align2::LEFT_TOP,
-                                    self.unit.number(mm),
-                                    egui::FontId::proportional(9.),
-                                    ink,
+                                    area.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    e,
+                                    egui::FontId::proportional(15.),
+                                    egui::Color32::RED,
                                 );
                             }
                         }
-                        for tick in ticks.visible(
-                            ((clip.top().max(area.top() + 23.) - page.top()) / scale) as f64,
-                            ((clip.bottom() - page.top()) / scale) as f64,
-                            self.layout.page_height,
-                        ) {
-                            let mm = tick as f64 * ticks.step_mm;
-                            let y = page.top() + mm as f32 * scale;
-                            painter.line_segment(
-                                [
-                                    egui::pos2(area.left() + 28. - ticks.length(tick), y),
-                                    egui::pos2(area.left() + 28., y),
-                                ],
-                                egui::Stroke::new(0.7_f32, ink),
-                            );
-                            if ticks.labeled(tick) {
-                                painter.text(
-                                    egui::pos2(area.left() + 2., y - 2.),
-                                    egui::Align2::LEFT_BOTTOM,
-                                    self.unit.number(mm),
-                                    egui::FontId::proportional(9.),
-                                    ink,
+
+                        if self.ccd_trial && self.layout.has_visible_images() {
+                            for p in self.ccd_profile.marks(&self.layout) {
+                                painter.circle_filled(
+                                    pos(p[0], p[1]),
+                                    self.ccd_profile.diameter as f32 / 2. * scale,
+                                    egui::Color32::BLACK,
+                                );
+                            }
+                        } else if !self.ccd_trial {
+                            for (x, y) in self.layout.manual_marks() {
+                                painter.line_segment(
+                                    [pos(x - 2., y), pos(x + 2., y)],
+                                    egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+                                );
+
+                                painter.line_segment(
+                                    [pos(x, y - 2.), pos(x, y + 2.)],
+                                    egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
                                 );
                             }
                         }
+
+                        let origin = if self.ccd_trial {
+                            self.ccd_profile.origin(&self.layout)
+                        } else if self.preview_mark_origin {
+                            sheet::LOWER_LEFT_MARK
+                        } else {
+                            [0., 0.]
+                        };
+
+                        let q = sheet::cutter_to_page_on([0., 0.], origin, self.layout.page_height);
+
+                        let origin_pos = pos(q[0], q[1]);
+
+                        painter.circle_stroke(
+                            origin_pos,
+                            5.,
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(240, 145, 0)),
+                        );
+
                         painter.text(
-                            area.min + egui::vec2(3., 3.),
-                            egui::Align2::LEFT_TOP,
-                            self.unit.label(),
-                            egui::FontId::proportional(9.),
-                            ink,
+                            origin_pos + egui::vec2(9., -8.),
+                            egui::Align2::LEFT_BOTTOM,
+                            "Origin (0,0)",
+                            egui::FontId::proportional(10.),
+                            egui::Color32::from_rgb(170, 95, 0),
                         );
-                    }
-                });
-        });
+                        self.draw_selection(&painter, page, scale);
+                        self.draw_ruler_guides(&painter, view, page, scale);
+                        (page, scale)
+                    });
+                if self.rulers {
+                    let (page, scale) = canvas.inner;
+                    let area = viewport_rect;
+                    let painter = ui.painter_at(area);
+                    self.draw_fixed_rulers(&painter, area, page, scale);
+                }
+            });
         self.print_dialog(ctx);
     }
 }
@@ -4023,7 +4045,8 @@ impl A4Studio {
             }
         }
 
-        ui.label(egui::RichText::new(&self.name).small().weak());
+        ui.add(egui::Label::new(egui::RichText::new(&self.name).small().weak()).truncate())
+            .on_hover_text(&self.name);
 
         let previous = self.cut_shape;
         egui::ComboBox::from_id_salt("cut-shape")
@@ -4052,7 +4075,6 @@ impl A4Studio {
                     "Print without background",
                 )
                 .changed();
-            ui.small("For plain backgrounds with clear corners. Raise tolerance to remove more; lower it to protect the object. Check hair and skin in preview. For busy backgrounds, use a transparent PNG.");
         }
         if self.cut_shape != sheet::CutShape::ImageFrame {
             changed |= ui
@@ -4067,9 +4089,6 @@ impl A4Studio {
         if changed && !self.source.is_empty() {
             self.retrace(ctx);
         }
-
-        ui.small("Use transparent PNG for best outlines")
-            .on_hover_text("Inner cutouts use enclosed transparent holes.");
     }
     fn repeat_dialog_content(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.);
@@ -4079,20 +4098,14 @@ impl A4Studio {
         });
         ui.small(match selected {
             Some((index, _)) => format!("Image {} size and sheet spacing", index + 1),
-            None => "Default copy size and sheet spacing".into(),
+            None => "Default size".into(),
         });
-        if !self.layout.custom.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(30, 95, 180),
-                format!("{} individually edited copies", self.layout.custom.len()),
-            );
-            if self.layout.image_tiles.is_empty()
-                && ui.button("Reflow all copies to grid").clicked()
-            {
-                self.reflow();
-            }
+        if !self.layout.custom.is_empty()
+            && self.layout.image_tiles.is_empty()
+            && ui.button("Reflow copies").clicked()
+        {
+            self.reflow();
         }
-
         let mut size = selected.map(|(_, p)| p);
         let mut width_changed = false;
         let mut height_changed = false;
@@ -4195,16 +4208,16 @@ impl A4Studio {
         }
         ui.add_space(8.);
 
-        ui.small("Column / row = horizontal / vertical gap")
-            .on_hover_text(
-                "Copies update immediately. Reflow resets individually moved or resized copies.",
-            );
-
         if self.layout.image_tiles.is_empty()
             && let Ok(capacity) = self.cached_capacity()
         {
-            ui.small(format!("Fits up to {capacity} copies"));
-            if ui.button("Fill sheet to capacity").clicked() {
+            if ui
+                .add_enabled(
+                    capacity > 0,
+                    egui::Button::new(format!("Fill sheet ({capacity})")),
+                )
+                .clicked()
+            {
                 self.layout.count = capacity;
             }
         }
@@ -4217,24 +4230,24 @@ impl A4Studio {
                 .slider(&mut self.layout.smoothing, 0.0..=4.0)
                 .fixed_decimals(2),
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (label, value) in [("Off", 0.), ("Light", 0.2), ("Medium", 0.5), ("Strong", 4.)] {
-                if ui.small_button(label).clicked() {
+                if ui
+                    .add_sized(
+                        [60., 26.],
+                        egui::Button::new(label)
+                            .selected((self.layout.smoothing - value).abs() < 1e-6)
+                            .corner_radius(crate::ui_theme::BUTTON_RADIUS),
+                    )
+                    .clicked()
+                {
                     self.layout.smoothing = value;
                 }
             }
         });
-        ui.small(format!("0 = original. Higher values remove zigzags on the final cut border. Try {}-{} {}. Fine details soften. Preview and PLT match; print and CCD dots stay fixed.",self.unit.number(0.3),self.unit.number(0.5),self.unit.label()));
         ui.add_space(8.);
-        ui.small(
-            "For round stickers, select Circle / ellipse in Artwork for a geometric cut path.",
-        );
 
         ui.checkbox(&mut self.layout.cut_inner_holes, "Cut inner holes");
-        if let Some(a) = &self.art {
-            ui.small(format!("{} inner holes detected", a.holes.len()));
-        }
-        ui.small("Off: outer contour only. On: also cut enclosed transparent areas. White pixels need background removal first.");
         ui.add_space(8.);
         ui.horizontal(|ui| {
             ui.label("Outline distance");
@@ -4246,35 +4259,30 @@ impl A4Studio {
                     .fixed_decimals(1),
             );
         });
-        ui.horizontal(|ui| {
-            for (label, value) in [
-                (
-                    format!("Inside {} {}", self.unit.number(-0.5), self.unit.label()),
-                    -0.5,
-                ),
-                ("Exact".into(), 0.),
-                (
-                    format!("Outside +{} {}", self.unit.number(1.), self.unit.label()),
-                    1.,
-                ),
-            ] {
-                if ui.small_button(label).clicked() {
+        ui.horizontal_wrapped(|ui| {
+            for (label, value) in [("Inside", -0.5), ("Exact", 0.), ("Outside", 1.)] {
+                if ui
+                    .add_sized(
+                        [72., 26.],
+                        egui::Button::new(label)
+                            .selected((self.layout.contour_offset - value).abs() < 1e-6)
+                            .corner_radius(crate::ui_theme::BUTTON_RADIUS),
+                    )
+                    .clicked()
+                {
                     self.layout.contour_offset = value;
                 }
             }
         });
-        ui.small("+ outside / - inside. Printed image stays the same size. Positive borders shrink inner holes; negative borders enlarge them. Small details may disappear.");
         ui.add_space(12.);
         ui.separator();
         ui.add_space(8.);
-        ui.strong("04   REGISTRATION");
+        ui.strong("Registration");
         ui.add_space(8.);
 
         ui.checkbox(&mut self.ccd_trial, "CCD camera · 4 dots");
 
         if self.ccd_trial {
-            ui.small("Origin: top-left dot. Marks follow the artwork area.");
-
             egui::CollapsingHeader::new("Dot settings").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Diameter");
@@ -4295,10 +4303,6 @@ impl A4Studio {
                             .range(5.0..=30.),
                     );
                 });
-
-                ui.small(
-                    "MC630 profile tested with your sample. Test new material with a pen first.",
-                );
             });
         } else {
             egui::CollapsingHeader::new("Manual alignment").show(ui, |ui| {
@@ -4329,6 +4333,17 @@ impl A4Studio {
             });
         }
 
-        egui::CollapsingHeader::new("Calibration").show(ui,|ui|{ui.add_enabled_ui(!self.ccd_trial,|ui|{ui.horizontal(|ui|{ui.label("Units / mm");ui.add(egui::DragValue::new(&mut self.layout.units).speed(0.1).range(1.0..=1000.));});});ui.small("CCD export uses feed Y first, carriage X second. Force and speed use machine settings. PLT sends no reset, force or speed command.");});
+        egui::CollapsingHeader::new("Calibration").show(ui, |ui| {
+            ui.add_enabled_ui(!self.ccd_trial, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Units / mm");
+                    ui.add(
+                        egui::DragValue::new(&mut self.layout.units)
+                            .speed(0.1)
+                            .range(1.0..=1000.),
+                    );
+                });
+            });
+        });
     }
 }
