@@ -3086,7 +3086,10 @@ mod selection_tests {
         app.reopen_last_project = true;
         assert!(!app.is_dirty());
         app.reopen_on_startup(&ctx);
-        assert_eq!(app.project_path, Some(path.clone()));
+        assert_eq!(
+            std::fs::canonicalize(app.project_path.as_ref().unwrap()).unwrap(),
+            std::fs::canonicalize(&path).unwrap()
+        );
         assert_eq!(app.layout.width, 31.);
         assert!(app.reopen_last_project);
         assert!(!app.is_dirty());
@@ -3146,9 +3149,15 @@ mod selection_tests {
         app.save_project_to(first.clone()).unwrap();
         app.save_project_to(second.clone()).unwrap();
         assert_eq!(app.recent_projects.entries.len(), 2);
-        assert_eq!(app.recent_projects.entries[0], second);
+        assert_eq!(
+            std::fs::canonicalize(&app.recent_projects.entries[0]).unwrap(),
+            std::fs::canonicalize(&second).unwrap()
+        );
         app.load_project_from(first.clone(), &ctx).unwrap();
-        assert_eq!(app.recent_projects.entries[0], first);
+        assert_eq!(
+            std::fs::canonicalize(&app.recent_projects.entries[0]).unwrap(),
+            std::fs::canonicalize(&first).unwrap()
+        );
         app.layout.width = 31.;
         app.request_action(DocumentAction::OpenProject(second.clone()), &ctx);
         assert_eq!(
