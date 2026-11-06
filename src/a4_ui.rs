@@ -1922,7 +1922,11 @@ impl A4Studio {
         }
         self.capacity_cache.as_ref().unwrap().1.clone()
     }
-    pub fn document_menu(&mut self, ctx: &egui::Context) {
+    pub fn document_menu(
+        &mut self,
+        ctx: &egui::Context,
+        updates: &mut crate::updater::UpdateDialog,
+    ) {
         egui::TopBottomPanel::top("document-menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -2152,6 +2156,7 @@ impl A4Studio {
                 if ui.button("Quick guide").clicked() {
                     self.show_guide = true;
                 }
+                updates.menu(ui, ctx);
             });
         });
     }

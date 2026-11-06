@@ -1,0 +1,41 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify package version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = ($metadata.packages | Where-Object name -eq 'mc630-plt-studio').version
+          if ($env:GITHUB_REF_NAME -ne "v$version" -or $version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Release tag must match the stable version in Cargo.toml."
+          }
+      - name: Test and build
+        shell: pwsh
+        run: |
+          cargo test --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release --locked --bin mc630-plt-studio
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/mc630-plt-studio.exe dist/MC630-PLT-Studio.exe -ErrorAction Stop
+          $hash = (Get-FileHash dist/MC630-PLT-Studio.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MC630-PLT-Studio.exe" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Publish Windows release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME dist/MC630-PLT-Studio.exe dist/SHA256SUMS.txt --verify-tag --generate-notes --latest

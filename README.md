@@ -1,5 +1,11 @@
 # MC630 PLT Studio
 
+## Updates
+
+Choose **Help → Check for Updates** to compare the installed version with the latest stable GitHub Release. If a newer Windows build is available, **Download update** opens its download in your browser. Save your projects, close Studio, replace the portable `MC630-PLT-Studio.exe` with the downloaded file, and reopen Studio. Keep the filename and path if you already associated `.mc630` files with it.
+
+To publish a Windows release, update the package version in `Cargo.toml` and refresh `Cargo.lock`, commit the changes, then push a matching tag such as `v0.1.1`. The Windows release workflow tests the tagged source and attaches the executable and its SHA-256 checksum to GitHub Releases. The first release can use `v0.1.0` while the package version is `0.1.0`.
+
 ## CCD 4-dot trial (experimental)
 
 App မှာ **CCD 4-dot trial (EXPERIMENTAL)** ကို ရွေးနိုင်ပါတယ်။ ထုတ်လုပ်သူ MC630 CCD ဗီဒီယိုမှာတွေ့တဲ့ black circle လေးခုကို အခြေခံထားပါတယ်။ **MC630 Ver5.022 နဲ့ scan အောင်မြင်ကြောင်း မစမ်းရသေးပါ။** Dot diameter 5.5 mm နဲ့ inset 7 mm က စမ်းသပ်တန်ဖိုးတွေဖြစ်ပြီး firmware specification မဟုတ်ပါ။ Mark Position 5.5 mm ဆိုတဲ့ video setting ကို dot diameter လို့ မအတည်ပြုနိုင်ပါ။

@@ -16,6 +16,7 @@ mod recent;
 mod recovery;
 mod ruler;
 mod ui_theme;
+mod updater;
 mod workspace_session;
 
 #[cfg(windows)]
@@ -53,6 +54,7 @@ struct Studio {
     save_all: Option<SaveAll>,
     tab_drag: Option<usize>,
     palette: palette_state::Store,
+    updates: updater::UpdateDialog,
 
     drawing: Drawing,
 
@@ -86,6 +88,7 @@ impl Default for Studio {
             save_all: None,
             tab_drag: None,
             palette: Default::default(),
+            updates: Default::default(),
 
             drawing: Drawing::square(),
 
@@ -735,7 +738,7 @@ impl eframe::App for Studio {
 
         if self.a4_mode {
             self.a4.apply_palette_state(self.palette.state);
-            self.a4.document_menu(ctx);
+            self.a4.document_menu(ctx, &mut self.updates);
             self.a4.standard_toolbar(ctx);
             self.tab_bar(ctx);
             if self.save_all.is_some() {
@@ -756,6 +759,7 @@ impl eframe::App for Studio {
                         .workspace_status(format!("Could not save palette position: {error}"));
                 }
             }
+            self.updates.show(ctx);
             self.a4.unsaved_dialog(ctx);
             return;
         }
@@ -782,6 +786,7 @@ impl eframe::App for Studio {
                         ui.close_menu();
                     }
                 });
+                self.updates.menu(ui, ctx);
             });
         });
         self.a4.settings_dialog(ctx);
@@ -871,6 +876,7 @@ impl eframe::App for Studio {
                 }
             }
         });
+        self.updates.show(ctx);
         self.a4.unsaved_dialog(ctx);
     }
 }
