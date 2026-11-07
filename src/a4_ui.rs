@@ -3684,10 +3684,16 @@ mod selection_tests {
         );
         app.finish_unsaved(UnsavedChoice::Cancel, &ctx);
         assert_eq!(app.layout.width, 31.);
-        assert_eq!(app.recent_projects.entries[0], first);
+        assert_eq!(
+            std::fs::canonicalize(&app.recent_projects.entries[0]).unwrap(),
+            std::fs::canonicalize(&first).unwrap()
+        );
         let missing = first.with_extension("missing");
         assert!(app.load_project_from(missing, &ctx).is_err());
-        assert_eq!(app.recent_projects.entries[0], first);
+        assert_eq!(
+            std::fs::canonicalize(&app.recent_projects.entries[0]).unwrap(),
+            std::fs::canonicalize(&first).unwrap()
+        );
         app.recent_projects.clear().unwrap();
         assert!(first.is_file() && second.is_file());
         std::fs::remove_file(first).unwrap();
