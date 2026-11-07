@@ -2,6 +2,7 @@ use eframe::egui;
 
 use mc630_plt_studio::sheet::{self, Artwork, Layout};
 
+use crate::cut_tools::{self, Anchor, Draft, Tool};
 use crate::preferences::{Preferences, Unit};
 use std::path::PathBuf;
 
@@ -133,12 +134,19 @@ enum ObjectEdit {
     Layers(Box<Layout>),
     LastImage(Box<Layout>, Vec<u8>, String),
     Visibility(std::collections::BTreeSet<usize>),
+    ManualCuts(Vec<Vec<mc630_plt_studio::Point>>, bool),
 }
 struct GuideDrag {
     axis: usize,
     index: Option<usize>,
     value: f64,
     grab_offset: f64,
+}
+struct CutShapeDrag {
+    index: usize,
+    start: mc630_plt_studio::Point,
+    path: Vec<mc630_plt_studio::Point>,
+    corner: Option<usize>,
 }
 struct PreviewCache {
     layout: Layout,
@@ -220,6 +228,11 @@ pub struct A4Studio {
     status: String,
 
     show_cut: bool,
+    cut_draft: Option<Draft>,
+    cut_corner_radius: f64,
+    pick_cut_shapes: bool,
+    selected_cut_shape: Option<usize>,
+    cut_shape_drag: Option<CutShapeDrag>,
     show_print_dialog: bool,
     zoom: f32,
     canvas_pan: egui::Vec2,
@@ -264,7 +277,7 @@ pub struct A4Studio {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -692,6 +705,7 @@ impl A4Studio {
 
     fn export_pair(&mut self) {
         let Some(a) = &self.art else {
+            self.export_manual_design();
             return;
         };
 
@@ -860,6 +874,31 @@ impl A4Studio {
         }
     }
 
+    fn export_manual_design(&mut self) {
+        match self.layout.manual_design_plt() {
+            Err(error) => self.status = error,
+            Ok(data) => {
+                let path = rfd::FileDialog::new()
+                    .add_filter("Plotter file", &["plt"])
+                    .set_file_name("DESIGN.plt")
+                    .save_file();
+                if let Some(mut path) = path {
+                    if path.extension().is_none() {
+                        path.set_extension("plt");
+                    }
+                    self.status = match std::fs::write(&path, data) {
+                        Ok(()) => format!("Saved {}", path.display()),
+                        Err(error) => format!("Export failed: {error}"),
+                    };
+                }
+            }
+        }
+    }
+
+    fn can_export_cut(&self) -> bool {
+        self.art.is_some() || !self.layout.manual_cut_paths.is_empty()
+    }
+
     fn new_document_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_new {
             return;
@@ -906,6 +945,10 @@ impl A4Studio {
             };
             self.guide_drag = None;
             self.selected_guide = None;
+            self.cut_draft = None;
+            self.pick_cut_shapes = false;
+            self.selected_cut_shape = None;
+            self.cut_shape_drag = None;
             let size = (self.new_width - 30.)
                 .min(self.new_height - 30.)
                 .clamp(1., 35.);
@@ -999,6 +1042,15 @@ impl A4Studio {
     fn swap_object_edit(&mut self, edit: ObjectEdit, ctx: &egui::Context) -> ObjectEdit {
         self.drag = None;
         match edit {
+            ObjectEdit::ManualCuts(paths, enabled) => {
+                self.cut_draft = None;
+                self.selected_cut_shape = None;
+                self.cut_shape_drag = None;
+                ObjectEdit::ManualCuts(
+                    std::mem::replace(&mut self.layout.manual_cut_paths, paths),
+                    std::mem::replace(&mut self.layout.use_manual_cut_paths, enabled),
+                )
+            }
             ObjectEdit::Visibility(hidden) => {
                 ObjectEdit::Visibility(std::mem::replace(&mut self.layout.hidden_images, hidden))
             }
@@ -1052,6 +1104,383 @@ impl A4Studio {
         }
         self.redo.clear();
         self.last_print = None;
+    }
+
+    fn record_manual_cut_edit(&mut self) {
+        self.record_layer_edit(ObjectEdit::ManualCuts(
+            self.layout.manual_cut_paths.clone(),
+            self.layout.use_manual_cut_paths,
+        ));
+    }
+
+    fn finish_manual_cut(&mut self, close: bool) {
+        let required = if close { 3 } else { 2 };
+        if let Some(draft) = self.cut_draft.as_ref()
+            && draft.tool == Tool::Pen
+            && draft.anchors.len() >= required
+        {
+            self.commit_manual_cut(cut_tools::pen_path(&draft.anchors, close));
+        }
+    }
+
+    fn activate_cut_tool(&mut self, tool: Tool) {
+        self.open_sidebar_section(2);
+        if self
+            .cut_draft
+            .as_ref()
+            .is_some_and(|draft| draft.tool == tool)
+        {
+            return;
+        }
+        self.clear_selection();
+        self.selected_guide = None;
+        self.pick_cut_shapes = false;
+        self.selected_cut_shape = None;
+        self.cut_shape_drag = None;
+        self.cut_draft = Some(Draft::new(tool));
+    }
+
+    fn activate_cut_picker(&mut self) {
+        self.open_sidebar_section(2);
+        self.cut_draft = None;
+        self.clear_selection();
+        self.selected_guide = None;
+        self.pick_cut_shapes = true;
+        self.show_cut = true;
+    }
+
+    fn remove_selected_cut_shape(&mut self) -> bool {
+        if self.cut_shape_drag.is_some() {
+            return true;
+        }
+        let Some(index) = self.selected_cut_shape.take() else {
+            return false;
+        };
+        if index >= self.layout.manual_cut_paths.len() {
+            return false;
+        }
+        self.record_manual_cut_edit();
+        self.layout.manual_cut_paths.remove(index);
+        self.layout.use_manual_cut_paths &= !self.layout.manual_cut_paths.is_empty();
+        self.status = "Cut shape removed.".into();
+        true
+    }
+
+    fn commit_manual_cut(&mut self, mut path: Vec<mc630_plt_studio::Point>) {
+        if path.len() < 2 {
+            return;
+        }
+        let limits = [self.layout.page_width, self.layout.page_height];
+        for p in &mut path {
+            for axis in 0..2 {
+                if !(-1e-7..=limits[axis] + 1e-7).contains(&p[axis]) {
+                    self.status = "Keep the cut line within the page.".into();
+                    return;
+                }
+                p[axis] = p[axis].clamp(0., limits[axis]);
+            }
+        }
+        let vertices = self
+            .layout
+            .manual_cut_paths
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
+        if self.layout.manual_cut_paths.len() >= 100
+            || path.len() > 4000
+            || vertices + path.len() > 10_000
+        {
+            self.status = "Manual cut line limit reached.".into();
+            return;
+        }
+        self.cut_draft = None;
+        self.record_manual_cut_edit();
+        self.layout.manual_cut_paths.push(path);
+        self.layout.use_manual_cut_paths = true;
+        self.pick_cut_shapes = true;
+        self.selected_cut_shape = Some(self.layout.manual_cut_paths.len() - 1);
+        self.show_cut = true;
+        self.status = "Manual cut line added.".into();
+    }
+
+    fn manual_cut_canvas(
+        &mut self,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        page: egui::Rect,
+        view: egui::Rect,
+        scale: f32,
+        panning: bool,
+    ) {
+        let Some(draft) = &mut self.cut_draft else {
+            return;
+        };
+        let canvas = if self.rulers {
+            egui::Rect::from_min_max(view.min + egui::vec2(28., 23.), view.max)
+        } else {
+            view
+        };
+        let screen =
+            |[x, y]: mc630_plt_studio::Point| page.min + egui::vec2(x as f32, y as f32) * scale;
+        let to_page = |p: egui::Pos2| {
+            let q = (p - page.min) / scale;
+            [
+                f64::from(q.x).clamp(0., self.layout.page_width),
+                f64::from(q.y).clamp(0., self.layout.page_height),
+            ]
+        };
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| response.hover_pos())
+            .filter(|p| !panning && canvas.contains(*p) && page.contains(*p));
+        if pointer.is_some() {
+            response.ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        let primary = egui::PointerButton::Primary;
+        if !panning && response.drag_started_by(primary) {
+            draft.drag_start = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .filter(|p| canvas.contains(*p) && page.contains(*p))
+                .map(to_page);
+        }
+        let stop = response.drag_stopped_by(primary);
+        let stroke = egui::Stroke::new(1.5_f32, self.contour_color);
+        if draft.tool != Tool::Pen {
+            if let (Some(start), Some(pointer)) = (draft.drag_start, pointer) {
+                let equal = response.ctx.input(|i| i.modifiers.shift);
+                let path = cut_tools::shape_path(
+                    draft.tool,
+                    start,
+                    to_page(pointer),
+                    equal,
+                    self.cut_corner_radius,
+                );
+                if stop && !path.is_empty() {
+                    self.commit_manual_cut(path);
+                    return;
+                }
+                for edge in path.windows(2) {
+                    painter.line_segment([screen(edge[0]), screen(edge[1])], stroke);
+                }
+            }
+            if stop {
+                draft.drag_start = None;
+            }
+            return;
+        }
+        let pending_anchor = draft.drag_start.zip(pointer).map(|(point, pointer)| {
+            let end = to_page(pointer);
+            Anchor {
+                point,
+                tangent: [end[0] - point[0], end[1] - point[1]],
+            }
+        });
+        if stop {
+            draft.drag_start = None;
+            if let Some(anchor) = pending_anchor
+                && draft.anchors.len() < 256
+            {
+                draft.anchors.push(anchor);
+            }
+        } else if response.clicked()
+            && let Some(p) = pointer
+        {
+            if draft.anchors.len() >= 3 && screen(draft.anchors[0].point).distance(p) <= 7. {
+                self.finish_manual_cut(true);
+                return;
+            }
+            if draft.anchors.len() < 256
+                && draft
+                    .anchors
+                    .last()
+                    .is_none_or(|last| screen(last.point).distance(p) >= 2.)
+            {
+                draft.anchors.push(Anchor {
+                    point: to_page(p),
+                    tangent: [0.; 2],
+                });
+            }
+        }
+        let mut anchors = draft.anchors.clone();
+        if !stop && let Some(anchor) = pending_anchor {
+            anchors.push(anchor);
+            painter.line_segment(
+                [
+                    screen(anchor.point),
+                    screen([
+                        anchor.point[0] + anchor.tangent[0],
+                        anchor.point[1] + anchor.tangent[1],
+                    ]),
+                ],
+                stroke,
+            );
+        }
+        for edge in cut_tools::pen_path(&anchors, false).windows(2) {
+            painter.line_segment([screen(edge[0]), screen(edge[1])], stroke);
+        }
+        for anchor in &anchors {
+            painter.circle_filled(screen(anchor.point), 3., self.contour_color);
+        }
+        if pending_anchor.is_none()
+            && let (Some(last), Some(pointer)) = (anchors.last(), pointer)
+        {
+            painter.line_segment([screen(last.point), pointer], stroke);
+        }
+    }
+
+    fn cut_shape_canvas(
+        &mut self,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        page: egui::Rect,
+        view: egui::Rect,
+        scale: f32,
+        panning: bool,
+    ) {
+        let screen =
+            |[x, y]: mc630_plt_studio::Point| page.min + egui::vec2(x as f32, y as f32) * scale;
+        let physical = |p: egui::Pos2| {
+            let d = (p - page.min) / scale;
+            [f64::from(d.x), f64::from(d.y)]
+        };
+        let corners = |path: &[mc630_plt_studio::Point]| {
+            let [x0, y0, x1, y1] = cut_tools::bounds(path);
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(screen)
+        };
+        let content = if self.rulers {
+            egui::Rect::from_min_max(view.min + egui::vec2(28., 23.), view.max)
+        } else {
+            view
+        };
+        let primary = egui::PointerButton::Primary;
+        if self.pick_cut_shapes
+            && !panning
+            && response.drag_started_by(primary)
+            && let Some(start) = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .filter(|p| content.contains(*p) && page.contains(*p))
+        {
+            let handle = self.selected_cut_shape.and_then(|i| {
+                let path = self.layout.manual_cut_paths.get(i)?;
+                corners(path)
+                    .iter()
+                    .position(|p| p.distance(start) <= 8.)
+                    .map(|corner| (i, corner))
+            });
+            let hit = handle.map(|(i, _)| i).or_else(|| {
+                self.layout
+                    .manual_cut_paths
+                    .iter()
+                    .rposition(|p| cut_tools::hit(p, physical(start), 6. / f64::from(scale)))
+            });
+            self.selected_cut_shape = hit;
+            self.cut_shape_drag = hit.map(|index| CutShapeDrag {
+                index,
+                start: physical(start),
+                path: self.layout.manual_cut_paths[index].clone(),
+                corner: handle.map(|(_, corner)| corner),
+            });
+        }
+        if !panning
+            && self.pick_cut_shapes
+            && response.clicked()
+            && let Some(pointer) = response
+                .interact_pointer_pos()
+                .filter(|p| content.contains(*p))
+        {
+            self.selected_cut_shape = self
+                .layout
+                .manual_cut_paths
+                .iter()
+                .rposition(|p| cut_tools::hit(p, physical(pointer), 6. / f64::from(scale)));
+        }
+        if let Some(drag) = &self.cut_shape_drag
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let [x, y] = physical(pointer);
+            let (dx, dy) = (x - drag.start[0], y - drag.start[1]);
+            let [x0, y0, x1, y1] = cut_tools::bounds(&drag.path);
+            let size = [self.layout.page_width, self.layout.page_height];
+            let old = sheet::Placement {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            };
+            let next =
+                if let Some(corner) = drag.corner.filter(|_| old.width >= 1. && old.height >= 1.) {
+                    let lock = response.ctx.input(|i| i.modifiers.shift);
+                    old.resized_on(corner, dx, dy, lock, 0., size)
+                } else {
+                    old.moved_on(dx, dy, 0., size)
+                };
+            let (sx, sy) = (
+                if old.width > 0. {
+                    next.width / old.width
+                } else {
+                    1.
+                },
+                if old.height > 0. {
+                    next.height / old.height
+                } else {
+                    1.
+                },
+            );
+            self.layout.manual_cut_paths[drag.index] = drag
+                .path
+                .iter()
+                .map(|&[x, y]| {
+                    [
+                        (next.x + (x - x0) * sx).clamp(0., size[0]),
+                        (next.y + (y - y0) * sy).clamp(0., size[1]),
+                    ]
+                })
+                .collect();
+        }
+        if response.drag_stopped_by(primary)
+            && let Some(drag) = self.cut_shape_drag.take()
+        {
+            let index = drag.index;
+            if self.layout.manual_cut_paths[index] != drag.path {
+                let current =
+                    std::mem::replace(&mut self.layout.manual_cut_paths[index], drag.path);
+                self.record_manual_cut_edit();
+                self.layout.manual_cut_paths[index] = current;
+            }
+        }
+        if self.art.is_none() && self.show_cut
+            || self.pick_cut_shapes && !self.layout.use_manual_cut_paths
+        {
+            let stroke = egui::Stroke::new(1.3_f32, self.contour_color);
+            for path in &self.layout.manual_cut_paths {
+                painter.add(egui::Shape::line(
+                    path.iter().copied().map(screen).collect(),
+                    stroke,
+                ));
+            }
+        }
+        if self.pick_cut_shapes
+            && let Some(path) = self
+                .selected_cut_shape
+                .and_then(|i| self.layout.manual_cut_paths.get(i))
+        {
+            let corners = corners(path);
+            let ink = egui::Color32::from_rgb(30, 95, 180);
+            let stroke = egui::Stroke::new(1_f32, ink);
+            painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
+            for p in corners {
+                let handle = egui::Rect::from_center_size(p, egui::vec2(7., 7.));
+                painter.rect(
+                    handle,
+                    1.,
+                    egui::Color32::WHITE,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
     }
 
     fn duplicate_images(
@@ -1799,6 +2228,37 @@ impl A4Studio {
                 line((11., 17.), (16., 22.));
                 line((16., 22.), (21., 17.));
             }
+            12 => {
+                painter.add(egui::Shape::closed_line(
+                    vec![
+                        p(7., 25.),
+                        p(10., 14.),
+                        p(21., 7.),
+                        p(25., 11.),
+                        p(18., 22.),
+                    ],
+                    ink,
+                ));
+                line((7., 25.), (15., 17.));
+                painter.circle_filled(p(15., 17.), 1.5, ink.color);
+            }
+            13 => {
+                painter.circle_stroke(p(16., 16.), 9., ink);
+            }
+            15 => {
+                painter.add(egui::Shape::closed_line(
+                    vec![p(8., 5.), p(24., 18.), p(17., 19.), p(14., 27.)],
+                    ink,
+                ));
+            }
+            14 => {
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(p(6., 8.), p(26., 24.)),
+                    4.,
+                    ink,
+                    egui::StrokeKind::Inside,
+                );
+            }
             _ => {
                 for (x, y, dx, dy) in [
                     (7., 7., 7., 7.),
@@ -2066,8 +2526,8 @@ impl A4Studio {
                     }
                     if ui
                         .add_enabled(
-                            self.art.is_some(),
-                            egui::Button::new("Export Print + Cut files..."),
+                            self.can_export_cut(),
+                            egui::Button::new("Export cut files..."),
                         )
                         .clicked()
                     {
@@ -2266,8 +2726,8 @@ impl A4Studio {
                     self.show_print_dialog = true;
                 }
                 if ui
-                    .add_enabled_ui(self.art.is_some(), |ui| {
-                        Self::tool_icon(ui, 11, false, "Export matching print and PLT cut files")
+                    .add_enabled_ui(self.can_export_cut(), |ui| {
+                        Self::tool_icon(ui, 11, false, "Export cut files")
                     })
                     .inner
                 {
@@ -2359,8 +2819,10 @@ impl A4Studio {
                     self.repeat_duplicate(ctx);
                 }
                 if self.guide_drag.is_none()
+                    && self.cut_draft.is_none()
                     && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
                     && !self.delete_selected_guide()
+                    && !self.remove_selected_cut_shape()
                 {
                     self.delete_selected_images(ctx);
                 }
@@ -2416,6 +2878,12 @@ impl A4Studio {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.guide_drag = None;
                 self.selected_guide = None;
+                self.cut_draft = None;
+                self.pick_cut_shapes = false;
+                self.selected_cut_shape = None;
+                if let Some(drag) = self.cut_shape_drag.take() {
+                    self.layout.manual_cut_paths[drag.index] = drag.path;
+                }
                 if let Some(drag) = self.drag.take() {
                     self.layout.custom = drag.before;
                 }
@@ -2554,6 +3022,35 @@ impl A4Studio {
                     }
                 });
                 ui.separator();
+                ui.small("Cut");
+                let active = self.cut_draft.as_ref().map(|draft| draft.tool);
+                {
+                    ui.horizontal(|ui| {
+                        if Self::tool_icon(ui, 12, active == Some(Tool::Pen), "Pen cut tool") {
+                            self.activate_cut_tool(Tool::Pen);
+                        }
+                        if Self::tool_icon(
+                            ui,
+                            13,
+                            active == Some(Tool::Ellipse),
+                            "Circle / Ellipse cut tool",
+                        ) {
+                            self.activate_cut_tool(Tool::Ellipse);
+                        }
+                    });
+                    if Self::tool_icon(
+                        ui,
+                        14,
+                        active == Some(Tool::Rectangle),
+                        "Rectangle / Rounded rectangle cut tool",
+                    ) {
+                        self.activate_cut_tool(Tool::Rectangle);
+                    }
+                    if Self::tool_icon(ui, 15, self.pick_cut_shapes, "Select and edit cut shapes") {
+                        self.activate_cut_picker();
+                    }
+                }
+                ui.separator();
                 ui.small("Space + drag")
                     .on_hover_text("Hold Space and drag to pan the page");
                 ui.small("Ctrl + wheel")
@@ -2691,7 +3188,10 @@ impl A4Studio {
                                 );
                             }
                         }
-                        if self.art.is_none() {
+                        if self.art.is_none()
+                            && self.layout.manual_cut_paths.is_empty()
+                            && self.cut_draft.is_none()
+                        {
                             painter.text(
                                 page.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -2706,10 +3206,12 @@ impl A4Studio {
                         };
 
                         let view = viewport_rect;
-                        let guide_gesture =
-                            self.update_ruler_guides(ui, view, page, scale, pan_gesture);
-                        if !pan_gesture && !guide_gesture {
-                            self.canvas_edit(ui, &canvas_response, page, scale);
+                        if self.cut_draft.is_none() && !self.pick_cut_shapes {
+                            let guide_gesture =
+                                self.update_ruler_guides(ui, view, page, scale, pan_gesture);
+                            if !pan_gesture && !guide_gesture {
+                                self.canvas_edit(ui, &canvas_response, page, scale);
+                            }
                         }
                         match self.layout.items() {
                             Ok(positions) => {
@@ -2866,7 +3368,23 @@ impl A4Studio {
                             egui::FontId::proportional(10.),
                             egui::Color32::from_rgb(170, 95, 0),
                         );
+                        self.cut_shape_canvas(
+                            &canvas_response,
+                            &painter,
+                            page,
+                            view,
+                            scale,
+                            pan_gesture,
+                        );
                         self.draw_selection(&painter, page, scale);
+                        self.manual_cut_canvas(
+                            &canvas_response,
+                            &painter,
+                            page,
+                            view,
+                            scale,
+                            pan_gesture,
+                        );
                         self.draw_ruler_guides(&painter, view, page, scale);
                         (page, scale)
                     });
@@ -4233,7 +4751,103 @@ impl A4Studio {
     }
     fn outline_dialog_content(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.);
+        ui.strong("Manual cut tools");
+        ui.horizontal(|ui| {
+            if ui.button("Select shape").clicked() {
+                self.activate_cut_picker();
+            }
+            if ui
+                .add_enabled(
+                    self.selected_cut_shape.is_some(),
+                    egui::Button::new("Delete shape"),
+                )
+                .clicked()
+            {
+                self.remove_selected_cut_shape();
+            }
+        });
+        let active = self.cut_draft.as_ref().map(|draft| draft.tool);
+        ui.horizontal_wrapped(|ui| {
+            for (tool, label) in [
+                (Tool::Pen, "Pen"),
+                (Tool::Ellipse, "Circle / Ellipse"),
+                (Tool::Rectangle, "Rectangle"),
+            ] {
+                let button = egui::Button::new(label)
+                    .selected(active == Some(tool))
+                    .corner_radius(crate::ui_theme::BUTTON_RADIUS);
+                if ui.add(button).clicked() {
+                    self.activate_cut_tool(tool);
+                }
+            }
+        });
+        if let Some(draft) = &self.cut_draft {
+            let tool = draft.tool;
+            let count = draft.anchors.len();
+            match tool {
+                Tool::Pen => {
+                    ui.small("Click for a corner; drag an anchor for a curve.");
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(count >= 2, egui::Button::new("Finish open"))
+                            .clicked()
+                        {
+                            self.finish_manual_cut(false);
+                        }
+                        if ui
+                            .add_enabled(count >= 3, egui::Button::new("Close path"))
+                            .clicked()
+                        {
+                            self.finish_manual_cut(true);
+                        }
+                    });
+                }
+                Tool::Ellipse => {
+                    ui.small("Drag to draw. Hold Shift for a circle.");
+                }
+                Tool::Rectangle => {
+                    ui.horizontal(|ui| {
+                        ui.label("Corner radius");
+                        ui.add(
+                            self.unit
+                                .distance(&mut self.cut_corner_radius)
+                                .speed(0.1)
+                                .range(0. ..=100.),
+                        );
+                    });
+                    ui.small("Drag to draw. Hold Shift for a square.");
+                }
+            }
+            if ui.button("Cancel").clicked() {
+                self.cut_draft = None;
+            }
+        } else if ui
+            .add_enabled(
+                !self.layout.manual_cut_paths.is_empty(),
+                egui::Button::new("Remove last"),
+            )
+            .clicked()
+        {
+            self.record_manual_cut_edit();
+            self.layout.manual_cut_paths.pop();
+            self.layout.use_manual_cut_paths &= !self.layout.manual_cut_paths.is_empty();
+        }
+        if !self.layout.manual_cut_paths.is_empty() {
+            let mut enabled = self.layout.use_manual_cut_paths;
+            if ui
+                .checkbox(
+                    &mut enabled,
+                    "Use manual lines instead of automatic outline",
+                )
+                .changed()
+            {
+                self.record_manual_cut_edit();
+                self.layout.use_manual_cut_paths = enabled;
+            }
+        }
+        ui.separator();
         ui.label("Outline smoothing");
+        ui.checkbox(&mut self.layout.preserve_corners, "Preserve sharp corners");
         ui.add(
             self.unit
                 .slider(&mut self.layout.smoothing, 0.0..=4.0)

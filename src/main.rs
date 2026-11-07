@@ -7,6 +7,7 @@ use mc630_plt_studio::{Drawing, Settings};
 use std::path::PathBuf;
 
 mod a4_ui;
+mod cut_tools;
 mod file_association;
 mod palette_state;
 mod photo_size;

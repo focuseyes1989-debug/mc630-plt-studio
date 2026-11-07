@@ -10,6 +10,8 @@ impl A4Studio {
         layout.custom.clear();
         layout.hidden_images.clear();
         layout.guides = Default::default();
+        layout.manual_cut_paths.clear();
+        layout.use_manual_cut_paths = false;
         if !layout.image_tiles.is_empty() {
             layout.image_tiles.clear();
             layout.count = 1;

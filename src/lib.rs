@@ -59,6 +59,11 @@ fn cubic(a: Point, b: Point, c: Point, d: Point, tol: f64, depth: u32, out: &mut
     cubic(a, ab, abc, m, tol, depth + 1, out);
     cubic(m, bcd, cd, d, tol, depth + 1, out);
 }
+/// Append the polyline approximation of a cubic, excluding its start point.
+pub fn append_cubic(out: &mut Vec<Point>, points: [Point; 4], tolerance: f64) {
+    let [a, b, c, d] = points;
+    cubic(a, b, c, d, tolerance, 0, out);
+}
 pub fn svg(data: &[u8]) -> Result<Drawing, String> {
     let xml = std::str::from_utf8(data).map_err(|_| "Use an uncompressed UTF-8 SVG file.")?;
     // CorelDRAW X7 emits this external declaration even for plain vector paths.

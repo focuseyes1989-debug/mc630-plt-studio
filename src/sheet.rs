@@ -555,11 +555,15 @@ fn trace(img: &RgbaImage) -> Result<(Vec<Vec<Point>>, Vec<Vec<Point>>), String> 
 // Smooth by physical arc length, independent of source pixel/vertex density.
 // A periodic Gaussian removes small zigzags, including across the closing seam.
 fn smooth_contour(path: &[Point], amount: f64) -> Vec<Point> {
-    if amount == 0. || path.len() < 4 {
+    smooth_path(path, amount, true)
+}
+
+fn smooth_path(path: &[Point], amount: f64, closed: bool) -> Vec<Point> {
+    if amount == 0. || path.len() < 3 {
         return path.to_vec();
     }
     let mut ring = path.to_vec();
-    if ring.first() == ring.last() {
+    if closed && ring.first() == ring.last() {
         ring.pop();
     }
     ring.dedup();
@@ -567,7 +571,8 @@ fn smooth_contour(path: &[Point], amount: f64) -> Vec<Point> {
         return path.to_vec();
     }
     let mut lengths = vec![0.];
-    for i in 0..ring.len() {
+    let edges = if closed { ring.len() } else { ring.len() - 1 };
+    for i in 0..edges {
         let p = ring[i];
         let q = ring[(i + 1) % ring.len()];
         lengths.push(lengths.last().unwrap() + (q[0] - p[0]).hypot(q[1] - p[1]));
@@ -580,11 +585,11 @@ fn smooth_contour(path: &[Point], amount: f64) -> Vec<Point> {
     let radius = amount.min(perimeter / 12.);
     let count = ((perimeter / (radius / 6.).clamp(0.005, 0.15)).ceil() as usize).clamp(16, 100_000);
     let step = perimeter / count as f64;
-    let mut samples = Vec::with_capacity(count);
+    let mut samples = Vec::with_capacity(count + 1);
     let mut edge = 0;
     for i in 0..count {
         let distance = i as f64 * step;
-        while edge + 1 < ring.len() && lengths[edge + 1] <= distance {
+        while edge + 1 < edges && lengths[edge + 1] <= distance {
             edge += 1;
         }
         let span = lengths[edge + 1] - lengths[edge];
@@ -597,6 +602,9 @@ fn smooth_contour(path: &[Point], amount: f64) -> Vec<Point> {
         let q = ring[(edge + 1) % ring.len()];
         samples.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
     }
+    if !closed {
+        samples.push(*ring.last().unwrap());
+    }
     let window = ((radius * 1.5 / step).ceil() as usize)
         .min(count / 2)
         .min(128);
@@ -606,20 +614,123 @@ fn smooth_contour(path: &[Point], amount: f64) -> Vec<Point> {
         .collect();
     let total = weights[0] + 2. * weights[1..].iter().sum::<f64>();
     let mut rounded = Vec::with_capacity(count + 1);
-    for i in 0..count {
+    let sample = |i: isize| {
+        let n = count as isize;
+        if closed {
+            samples[i.rem_euclid(n) as usize]
+        } else if i < 0 {
+            let p = samples[(-i) as usize];
+            [2. * samples[0][0] - p[0], 2. * samples[0][1] - p[1]]
+        } else if i > n {
+            let p = samples[(2 * n - i) as usize];
+            [2. * samples[count][0] - p[0], 2. * samples[count][1] - p[1]]
+        } else {
+            samples[i as usize]
+        }
+    };
+    for i in 0..samples.len() {
         let mut p = [samples[i][0] * weights[0], samples[i][1] * weights[0]];
         for j in 1..=window {
-            let a = samples[(i + j) % count];
-            let b = samples[(i + count - j) % count];
+            let a = sample((i + j) as isize);
+            let b = sample(i as isize - j as isize);
             p[0] += (a[0] + b[0]) * weights[j];
             p[1] += (a[1] + b[1]) * weights[j];
         }
         rounded.push([p[0] / total, p[1] / total]);
     }
-    rounded.push(rounded[0]);
+    if closed {
+        rounded.push(rounded[0]);
+    } else {
+        rounded[0] = path[0];
+        *rounded.last_mut().unwrap() = *path.last().unwrap();
+    }
     let mut compact = vec![rounded[0]];
     simplify(&rounded, 0.005, &mut compact);
-    if compact.len() >= 4 { compact } else { rounded }
+    if !closed || compact.len() >= 4 {
+        compact
+    } else {
+        rounded
+    }
+}
+
+// Detect turns that stay sharp at two distances, then smooth only between them.
+fn smooth_mixed_contour(path: &[Point], amount: f64) -> Vec<Point> {
+    if path.len() < 4 {
+        return path.to_vec();
+    }
+    let ring = path.strip_suffix(&path[..1]).unwrap_or(path);
+    if ring.len() < 3 {
+        return path.to_vec();
+    }
+    let mut lengths = vec![0.];
+    for (i, p) in ring.iter().enumerate() {
+        let q = ring[(i + 1) % ring.len()];
+        lengths.push(lengths[i] + (q[0] - p[0]).hypot(q[1] - p[1]));
+    }
+    let perimeter = lengths[ring.len()];
+    if !perimeter.is_finite() || perimeter <= 1e-9 {
+        return path.to_vec();
+    }
+    let probe = (amount * 0.65).clamp(0.35, 1.5).min(perimeter / 18.);
+    let at = |distance: f64| {
+        let d = distance.rem_euclid(perimeter);
+        let i = lengths
+            .partition_point(|&l| l <= d)
+            .saturating_sub(1)
+            .min(ring.len() - 1);
+        let span = lengths[i + 1] - lengths[i];
+        let t = if span > 0. {
+            (d - lengths[i]) / span
+        } else {
+            0.
+        };
+        let p = ring[i];
+        let q = ring[(i + 1) % ring.len()];
+        [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]
+    };
+    let mut candidates = Vec::new();
+    for (i, p) in ring.iter().enumerate() {
+        let turn = |distance| {
+            let a = at(lengths[i] - distance);
+            let b = at(lengths[i] + distance);
+            let u = [p[0] - a[0], p[1] - a[1]];
+            let v = [b[0] - p[0], b[1] - p[1]];
+            (u[0] * v[1] - u[1] * v[0])
+                .atan2(u[0] * v[0] + u[1] * v[1])
+                .abs()
+        };
+        let near = turn(probe);
+        let far = turn(probe * 2.);
+        if near >= 50_f64.to_radians() && far >= 50_f64.to_radians() && near >= far * 0.7 {
+            candidates.push((i, near.min(far)));
+        }
+    }
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut corners = std::collections::BTreeSet::<usize>::new();
+    for (i, _) in candidates {
+        let previous = corners.range(..i).next_back().or_else(|| corners.last());
+        let next = corners.range(i..).next().or_else(|| corners.first());
+        if previous.into_iter().chain(next).all(|&j| {
+            let distance: f64 = (lengths[i] - lengths[j]).abs();
+            distance.min(perimeter - distance) >= probe
+        }) {
+            corners.insert(i);
+        }
+    }
+    if corners.is_empty() {
+        return smooth_contour(path, amount);
+    }
+    let corners: Vec<_> = corners.into_iter().collect();
+    let mut out = vec![ring[corners[0]]];
+    for (i, &start) in corners.iter().enumerate() {
+        let mut end = corners[(i + 1) % corners.len()];
+        if end <= start {
+            end += ring.len();
+        }
+        let span: Vec<_> = (start..=end).map(|j| ring[j % ring.len()]).collect();
+        out.extend(smooth_path(&span, amount, false).into_iter().skip(1));
+    }
+    out
 }
 
 fn simplify(p: &[Point], tol: f64, out: &mut Vec<Point>) {
@@ -727,6 +838,8 @@ pub struct Layout {
     /// Signed contour distance in physical mm; does not resize the printed image.
     pub contour_offset: f64,
     pub smoothing: f64,
+    #[serde(default = "preserve_corners_default")]
+    pub preserve_corners: bool,
     pub cut_inner_holes: bool,
     pub custom: std::collections::BTreeMap<usize, Placement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -736,6 +849,11 @@ pub struct Layout {
     /// Vertical (X) and horizontal (Y) guides in page millimetres.
     #[serde(default)]
     pub guides: [Vec<f64>; 2],
+    /// Hand-drawn paths in page millimetres, with Y measured from the top.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_cut_paths: Vec<Vec<Point>>,
+    #[serde(default)]
+    pub use_manual_cut_paths: bool,
     pub margin: f64,
     pub count: usize,
     pub units: f64,
@@ -744,6 +862,10 @@ pub struct Layout {
     pub flip_x: bool,
     pub flip_y: bool,
 }
+fn preserve_corners_default() -> bool {
+    true
+}
+
 impl Default for Layout {
     fn default() -> Self {
         Self {
@@ -755,11 +877,14 @@ impl Default for Layout {
             row_gap: 3.,
             contour_offset: 0.,
             smoothing: 0.,
+            preserve_corners: preserve_corners_default(),
             cut_inner_holes: false,
             custom: Default::default(),
             image_tiles: vec![],
             hidden_images: Default::default(),
             guides: Default::default(),
+            manual_cut_paths: vec![],
+            use_manual_cut_paths: false,
             margin: 15.,
             count: 20,
             units: 40.,
@@ -771,6 +896,21 @@ impl Default for Layout {
     }
 }
 impl Layout {
+    pub fn validate_manual_cut_paths(&self) -> Result<(), String> {
+        if self.manual_cut_paths.len() > 100
+            || self.manual_cut_paths.iter().map(Vec::len).sum::<usize>() > 10_000
+            || self.manual_cut_paths.iter().any(|path| {
+                !(2..=4000).contains(&path.len())
+                    || path.iter().any(|&[x, y]| {
+                        !(0. ..=self.page_width).contains(&x)
+                            || !(0. ..=self.page_height).contains(&y)
+                    })
+            })
+        {
+            return Err("Manual cut paths must stay within the page limits.".into());
+        }
+        Ok(())
+    }
     pub fn has_visible_images(&self) -> bool {
         (0..self.count).any(|index| !self.hidden_images.contains(&index))
     }
@@ -920,9 +1060,14 @@ impl Layout {
         if !self.smoothing.is_finite() || !(0.0..=4.0).contains(&self.smoothing) {
             return Err("Smoothing must be between 0 and 4 mm.".into());
         }
-        if self.smoothing > 0. && self.contour_offset == 0. {
+        let preserve_corners = self.smoothing > 0. && self.preserve_corners;
+        if self.smoothing > 0. && (self.contour_offset == 0. || preserve_corners) {
             for path in original.iter_mut().chain(holes.iter_mut()) {
-                *path = smooth_contour(path, self.smoothing);
+                *path = if preserve_corners {
+                    smooth_mixed_contour(path, self.smoothing)
+                } else {
+                    smooth_contour(path, self.smoothing)
+                };
             }
         }
         if self.contour_offset == 0. {
@@ -957,7 +1102,14 @@ impl Layout {
                 .map(|(p, h)| Polygon::new(p.exterior().clone(), h))
                 .collect(),
         );
-        let result = polygons.buffer(self.contour_offset);
+        let result = if preserve_corners {
+            use geo::algorithm::buffer::{BufferStyle, LineJoin};
+            polygons.buffer_with_style(
+                BufferStyle::new(self.contour_offset).line_join(LineJoin::Miter(0.75)),
+            )
+        } else {
+            polygons.buffer(self.contour_offset)
+        };
         let mut outlines = Vec::new();
         for polygon in &result.0 {
             if self.cut_inner_holes {
@@ -980,7 +1132,7 @@ impl Layout {
             );
         }
         // Smooth the final offset geometry: buffering can introduce new corners.
-        if self.smoothing > 0. {
+        if self.smoothing > 0. && !preserve_corners {
             for path in &mut outlines {
                 *path = smooth_contour(path, self.smoothing);
             }
@@ -1278,6 +1430,13 @@ impl Layout {
         a: &Artwork,
         cache: &mut OutlineCache,
     ) -> Result<Vec<Vec<Point>>, String> {
+        if self.use_manual_cut_paths {
+            self.validate_manual_cut_paths()?;
+            if self.manual_cut_paths.is_empty() {
+                return Err("Draw a manual cut line or switch to automatic outlines.".into());
+            }
+            return Ok(self.manual_cut_paths.clone());
+        }
         cache.prepare(a);
         let mut paths = Vec::new();
         for (i, item) in self.items()?.into_iter().enumerate() {
@@ -1290,7 +1449,7 @@ impl Layout {
                 item.height.to_bits(),
                 self.contour_offset.to_bits(),
                 self.smoothing.to_bits(),
-                self.cut_inner_holes as u64,
+                self.cut_inner_holes as u64 | ((self.preserve_corners as u64) << 1),
                 self.custom.is_empty() as u64,
                 self.count as u64,
                 self.page_width.to_bits(),
@@ -1335,8 +1494,11 @@ impl Layout {
         a: &Artwork,
         cache: &mut OutlineCache,
     ) -> Result<Vec<Vec<Point>>, String> {
+        self.to_cutter_coordinates(self.page_cut_paths_cached(a, cache)?)
+    }
+    fn to_cutter_coordinates(&self, outlines: Vec<Vec<Point>>) -> Result<Vec<Vec<Point>>, String> {
         let mut paths = Vec::new();
-        for outline in self.page_cut_paths_cached(a, cache)? {
+        for outline in outlines {
             let mut path = Vec::new();
             for p in outline {
                 let mut x = p[0];
@@ -1357,6 +1519,25 @@ impl Layout {
             paths.push(path);
         }
         Ok(paths)
+    }
+    pub fn manual_design_plt(&self) -> Result<String, String> {
+        self.validate_manual_cut_paths()?;
+        if self.manual_cut_paths.is_empty() {
+            return Err("Draw a cut shape before exporting.".into());
+        }
+        if !(0. ..=1000.).contains(&self.units) || self.units == 0. {
+            return Err("Invalid plotter units.".into());
+        }
+        let mut page = self.clone();
+        page.offset_x = 0.;
+        page.offset_y = 0.;
+        let paths = page.to_cutter_coordinates(self.manual_cut_paths.clone())?;
+        let mut out = String::from("PA;PU0,0;");
+        for path in paths {
+            write_plt_path(&mut out, &path, self.units, false);
+        }
+        out.push_str("PU0,0;!PG;");
+        Ok(out)
     }
     pub fn plt(&self, a: &Artwork) -> Result<String, String> {
         if !self.has_visible_images() {
@@ -1432,6 +1613,35 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manual_cut_line_replaces_auto_trace_in_preview_and_plt() {
+        let art = sample();
+        let path = vec![[20., 20.], [50., 22.], [40., 45.], [20., 20.]];
+        let mut layout = Layout {
+            count: 1,
+            manual_cut_paths: vec![path.clone()],
+            use_manual_cut_paths: true,
+            ..Layout::default()
+        };
+        assert_eq!(layout.page_cut_paths(&art).unwrap(), vec![path]);
+        assert!(
+            layout
+                .plt(&art)
+                .unwrap()
+                .contains("PU800,11080;PD2000,11000;PD1600,10080;PD800,11080;")
+        );
+        let (_, ccd) = CcdTrial::default().pair(&layout, &art).unwrap();
+        assert!(ccd.contains("PU480,480;PD560,1680;PD1480,1280;PD480,480;"));
+        assert_eq!(
+            layout.manual_design_plt().unwrap(),
+            "PA;PU0,0;PU800,11080;PD2000,11000;PD1600,10080;PD800,11080;PU0,0;!PG;"
+        );
+        layout.use_manual_cut_paths = false;
+        assert_ne!(
+            layout.page_cut_paths(&art).unwrap(),
+            layout.manual_cut_paths
+        );
+    }
     #[test]
     fn hidden_layers_keep_placement_but_are_excluded_from_print_cut_and_ccd() {
         let art = sample();
@@ -1597,6 +1807,45 @@ mod tests {
         );
     }
     #[test]
+    fn mixed_outline_smooths_arc_and_keeps_rectangle_corners() {
+        let mut path = vec![[0., 20.]];
+        for i in 0..=1000 {
+            let t = i as f64 * std::f64::consts::PI / 1000.;
+            let r = 20. + 0.07 * (100. * t).sin();
+            path.push([40. - r * t.cos(), 20. - r * t.sin()]);
+        }
+        let corners = [
+            [0., 20.],
+            [20., 20.],
+            [60., 20.],
+            [80., 20.],
+            [80., 55.],
+            [0., 55.],
+        ];
+        path.extend_from_slice(&[[80., 20.], [80., 55.], [0., 55.], [0., 20.]]);
+        let smoothed = smooth_mixed_contour(&path, 1.);
+        assert_eq!(smoothed.first(), smoothed.last());
+        for corner in corners {
+            assert!(
+                smoothed
+                    .iter()
+                    .any(|p| (p[0] - corner[0]).hypot(p[1] - corner[1]) < 0.001),
+                "lost corner {corner:?}"
+            );
+        }
+        let arc: Vec<_> = smoothed.iter().filter(|p| p[1] < 18.).collect();
+        assert!(arc.len() > 10);
+        assert!(
+            arc.iter()
+                .all(|p| ((p[0] - 40.).hypot(p[1] - 20.) - 20.).abs() < 0.04)
+        );
+        assert!(
+            smoothed
+                .windows(2)
+                .any(|edge| edge == [[80., 55.], [0., 55.]])
+        );
+    }
+    #[test]
     fn physical_smoothing_removes_pixel_scale_zigzags() {
         let mut path = Vec::new();
         for i in 0..4000 {
@@ -1656,6 +1905,7 @@ mod tests {
         let before = base.outline_mm(&art).unwrap();
         let after = Layout {
             smoothing: 0.5,
+            preserve_corners: false,
             ..base
         }
         .outline_mm(&art)
@@ -1702,6 +1952,7 @@ mod tests {
         let before = base.outline_mm(&a).unwrap();
         let smooth = Layout {
             smoothing: 0.5,
+            preserve_corners: false,
             ..base.clone()
         };
         let after = smooth.outline_mm(&a).unwrap();

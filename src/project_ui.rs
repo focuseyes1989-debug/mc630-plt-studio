@@ -191,6 +191,10 @@ impl A4Studio {
         self.duplicate_step = None;
         self.guide_drag = None;
         self.selected_guide = None;
+        self.cut_draft = None;
+        self.pick_cut_shapes = false;
+        self.selected_cut_shape = None;
+        self.cut_shape_drag = None;
         self.panning = false;
         self.undo.clear();
         self.redo.clear();

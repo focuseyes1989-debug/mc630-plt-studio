@@ -105,6 +105,7 @@ impl Preferences {
     }
     pub fn validate_values(&self) -> Result<(), String> {
         self.layout.capacity()?;
+        self.layout.validate_manual_cut_paths()?;
         if self.layout.count == 0
             || self.layout.count > 1000
             || self.layout.custom.len() > 1000
