@@ -2,7 +2,7 @@
 
 ## Updates
 
-Choose **Help → Check for Updates** to compare the installed version with the latest stable GitHub Release. If a newer Windows build is available, **Download update** opens its download in your browser. Save your projects, close Studio, replace the portable `MC630-PLT-Studio.exe` with the downloaded file, and reopen Studio. Keep the filename and path if you already associated `.mc630` files with it.
+Choose **Help → Check for Updates** to compare the installed version with the latest stable GitHub Release. If a newer Windows build is available, **Update now** downloads it inside Studio, verifies its SHA-256 checksum and restarts the app automatically. Unsaved project tabs use the normal Save / Don't Save / Cancel prompts; Cancel postpones installation. A hidden helper waits for Studio to exit, replaces the executable at the same path, and reopens the saved project tabs. Replacement or process-launch failures restore the previous executable. The app folder must be writable; no administrator prompt is used. Existing versions without this feature need one manual upgrade. Downloads are limited to stable releases from this repository; release assets must include a GitHub SHA-256 digest or `SHA256SUMS.txt`.
 
 To publish a Windows release, update the package version in `Cargo.toml` and refresh `Cargo.lock`, commit the changes, then push a matching tag such as `v0.1.1`. The Windows release workflow tests the tagged source and attaches the executable and its SHA-256 checksum to GitHub Releases. The first release can use `v0.1.0` while the package version is `0.1.0`.
 

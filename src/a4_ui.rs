@@ -703,9 +703,54 @@ impl A4Studio {
         }
     }
 
-    fn export_pair(&mut self) {
+    fn cut_file_data(&self) -> Result<String, String> {
+        match &self.art {
+            None => self.layout.manual_design_plt(),
+            Some(art) if self.ccd_trial => {
+                self.ccd_profile.pair(&self.layout, art).map(|(_, plt)| plt)
+            }
+            Some(art) => self.layout.plt(art),
+        }
+    }
+
+    fn export_cut_file(&mut self, frame: &eframe::Frame) {
+        match self.cut_file_data() {
+            Err(error) => {
+                self.status = format!("Export failed: {error}");
+                rfd::MessageDialog::new()
+                    .set_parent(frame)
+                    .set_title("Cannot export PLT")
+                    .set_description(&error)
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+            }
+            Ok(data) => {
+                if let Some(mut path) = rfd::FileDialog::new()
+                    .set_parent(frame)
+                    .set_title("Export PLT")
+                    .add_filter("Plotter file (*.plt)", &["plt"])
+                    .set_file_name(if self.ccd_trial && self.art.is_some() {
+                        "CCD_TEST.plt"
+                    } else {
+                        "CUT.plt"
+                    })
+                    .save_file()
+                {
+                    if path.extension().is_none() {
+                        path.set_extension("plt");
+                    }
+                    self.status = match std::fs::write(&path, data) {
+                        Ok(()) => format!("Saved {}", path.display()),
+                        Err(error) => format!("Export failed: {error}"),
+                    };
+                }
+            }
+        }
+    }
+
+    fn export_pair(&mut self, frame: &eframe::Frame) {
         let Some(a) = &self.art else {
-            self.export_manual_design();
+            self.export_cut_file(frame);
             return;
         };
 
@@ -720,6 +765,7 @@ impl A4Studio {
 
             Ok((html, plt)) => {
                 if let Some(parent) = rfd::FileDialog::new()
+                    .set_parent(frame)
                     .set_title("Choose folder for a new print & cut job")
                     .pick_folder()
                 {
@@ -869,27 +915,6 @@ impl A4Studio {
 
                         Err(e) => self.status = format!("Export incomplete: {e}"),
                     }
-                }
-            }
-        }
-    }
-
-    fn export_manual_design(&mut self) {
-        match self.layout.manual_design_plt() {
-            Err(error) => self.status = error,
-            Ok(data) => {
-                let path = rfd::FileDialog::new()
-                    .add_filter("Plotter file", &["plt"])
-                    .set_file_name("DESIGN.plt")
-                    .save_file();
-                if let Some(mut path) = path {
-                    if path.extension().is_none() {
-                        path.set_extension("plt");
-                    }
-                    self.status = match std::fs::write(&path, data) {
-                        Ok(()) => format!("Saved {}", path.display()),
-                        Err(error) => format!("Export failed: {error}"),
-                    };
                 }
             }
         }
@@ -1149,6 +1174,38 @@ impl A4Studio {
         self.show_cut = true;
     }
 
+    fn cut_picker_owns_gesture(&self, ctx: &egui::Context, page: egui::Rect, scale: f32) -> bool {
+        if !self.pick_cut_shapes {
+            return false;
+        }
+        if self.cut_shape_drag.is_some() {
+            return true;
+        }
+        let Some(pointer) = ctx.input(|i| i.pointer.press_origin().or(i.pointer.interact_pos()))
+        else {
+            return false;
+        };
+        let p = (pointer - page.min) / scale;
+        let point = [f64::from(p.x), f64::from(p.y)];
+        let tolerance = 8. / f64::from(scale);
+        if let Some(path) = self
+            .selected_cut_shape
+            .and_then(|i| self.layout.manual_cut_paths.get(i))
+        {
+            let [x0, y0, x1, y1] = cut_tools::bounds(path);
+            if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                .iter()
+                .any(|&[x, y]| (x - point[0]).hypot(y - point[1]) <= tolerance)
+            {
+                return true;
+            }
+        }
+        self.layout
+            .manual_cut_paths
+            .iter()
+            .any(|path| cut_tools::hit(path, point, 6. / f64::from(scale)))
+    }
+
     fn remove_selected_cut_shape(&mut self) -> bool {
         if self.cut_shape_drag.is_some() {
             return true;
@@ -1376,6 +1433,9 @@ impl A4Studio {
                     .rposition(|p| cut_tools::hit(p, physical(start), 6. / f64::from(scale)))
             });
             self.selected_cut_shape = hit;
+            if hit.is_some() {
+                self.clear_selection();
+            }
             self.cut_shape_drag = hit.map(|index| CutShapeDrag {
                 index,
                 start: physical(start),
@@ -1395,6 +1455,9 @@ impl A4Studio {
                 .manual_cut_paths
                 .iter()
                 .rposition(|p| cut_tools::hit(p, physical(pointer), 6. / f64::from(scale)));
+            if self.selected_cut_shape.is_some() {
+                self.clear_selection();
+            }
         }
         if let Some(drag) = &self.cut_shape_drag
             && let Some(pointer) = response.interact_pointer_pos()
@@ -1814,6 +1877,7 @@ impl A4Studio {
                 });
                 let modifiers = ui.input(|i| i.modifiers);
                 if let Some(index) = target {
+                    self.selected_cut_shape = None;
                     let duplicate = modifiers.ctrl || modifiers.shift;
                     if !duplicate {
                         self.select_target(index, modifiers.ctrl, modifiers.shift);
@@ -2464,6 +2528,7 @@ impl A4Studio {
         &mut self,
         ctx: &egui::Context,
         updates: &mut crate::updater::UpdateDialog,
+        frame: &eframe::Frame,
     ) {
         egui::TopBottomPanel::top("document-menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -2525,14 +2590,21 @@ impl A4Studio {
                         ui.close_menu();
                     }
                     if ui
+                        .add_enabled(self.can_export_cut(), egui::Button::new("Export PLT..."))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        self.export_cut_file(frame);
+                    }
+                    if ui
                         .add_enabled(
-                            self.can_export_cut(),
-                            egui::Button::new("Export cut files..."),
+                            self.art.is_some(),
+                            egui::Button::new("Export print & cut job..."),
                         )
                         .clicked()
                     {
                         ui.close_menu();
-                        self.export_pair();
+                        self.export_pair(frame);
                     }
                     if ui.button("Print...   Ctrl+P").clicked() {
                         self.show_print_dialog = true;
@@ -2698,7 +2770,7 @@ impl A4Studio {
             });
         });
     }
-    pub fn standard_toolbar(&mut self, ctx: &egui::Context) {
+    pub fn standard_toolbar(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         egui::TopBottomPanel::top("standard-toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if Self::tool_icon(ui, 6, false, "New project (Ctrl+N)") {
@@ -2727,11 +2799,11 @@ impl A4Studio {
                 }
                 if ui
                     .add_enabled_ui(self.can_export_cut(), |ui| {
-                        Self::tool_icon(ui, 11, false, "Export cut files")
+                        Self::tool_icon(ui, 11, false, "Export PLT")
                     })
                     .inner
                 {
-                    self.export_pair();
+                    self.export_cut_file(frame);
                 }
                 ui.separator();
                 for (index, (icon, label)) in
@@ -3046,7 +3118,8 @@ impl A4Studio {
                     ) {
                         self.activate_cut_tool(Tool::Rectangle);
                     }
-                    if Self::tool_icon(ui, 15, self.pick_cut_shapes, "Select and edit cut shapes") {
+                    if Self::tool_icon(ui, 15, self.pick_cut_shapes, "Select images and cut shapes")
+                    {
                         self.activate_cut_picker();
                     }
                 }
@@ -3206,10 +3279,13 @@ impl A4Studio {
                         };
 
                         let view = viewport_rect;
-                        if self.cut_draft.is_none() && !self.pick_cut_shapes {
+                        if self.cut_draft.is_none() {
                             let guide_gesture =
                                 self.update_ruler_guides(ui, view, page, scale, pan_gesture);
-                            if !pan_gesture && !guide_gesture {
+                            if !pan_gesture
+                                && !guide_gesture
+                                && !self.cut_picker_owns_gesture(ui.ctx(), page, scale)
+                            {
                                 self.canvas_edit(ui, &canvas_response, page, scale);
                             }
                         }
@@ -3401,6 +3477,95 @@ impl A4Studio {
 
 #[cfg(test)]
 mod selection_tests {
+    #[test]
+    fn export_data_preserves_image_ccd_and_standalone_manual_formats() {
+        let ctx = egui::Context::default();
+        let mut app = super::A4Studio::default();
+        app.source = include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        app.layout.count = 1;
+        app.retrace(&ctx);
+        let art = app.art.as_ref().unwrap();
+        assert_eq!(app.cut_file_data().unwrap(), app.layout.plt(art).unwrap());
+        app.ccd_trial = true;
+        assert_eq!(
+            app.cut_file_data().unwrap(),
+            app.ccd_profile.pair(&app.layout, art).unwrap().1
+        );
+        app.commit_manual_cut(vec![[20., 20.], [40., 20.], [40., 40.], [20., 20.]]);
+        let ccd = app.cut_file_data().unwrap();
+        assert_eq!(
+            ccd,
+            app.ccd_profile
+                .pair(&app.layout, app.art.as_ref().unwrap())
+                .unwrap()
+                .1
+        );
+        app.art = None;
+        assert_eq!(
+            app.cut_file_data().unwrap(),
+            app.layout.manual_design_plt().unwrap()
+        );
+        app.layout.manual_cut_paths.clear();
+        assert!(app.cut_file_data().is_err());
+    }
+
+    #[test]
+    fn selection_arrow_routes_images_and_manual_shapes_without_stealing_drags() {
+        let ctx = egui::Context::default();
+        let mut app = super::A4Studio::default();
+        app.source = include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        app.layout.count = 1;
+        app.retrace(&ctx);
+        app.activate_cut_picker();
+        let page = egui::Rect::from_min_size(egui::pos2(20., 20.), egui::vec2(420., 594.));
+        let pointer = egui::pos2(70., 70.);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.allocate_rect(page, egui::Sense::click_and_drag());
+            });
+        });
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.allocate_rect(page, egui::Sense::click_and_drag());
+                assert!(!app.cut_picker_owns_gesture(ctx, page, 2.));
+                app.canvas_edit(ui, &response, page, 2.);
+            });
+        });
+        assert_eq!(app.selected, Some(0));
+        app.drag = None;
+        app.layout.manual_cut_paths = vec![vec![
+            [20., 20.],
+            [40., 20.],
+            [40., 40.],
+            [20., 40.],
+            [20., 20.],
+        ]];
+        assert!(app.cut_picker_owns_gesture(&ctx, page, 2.));
+        app.layout.manual_cut_paths[0]
+            .iter_mut()
+            .for_each(|p| p[0] += 80.);
+        assert!(!app.cut_picker_owns_gesture(&ctx, page, 2.));
+        app.cut_shape_drag = Some(super::CutShapeDrag {
+            index: 0,
+            start: [25., 25.],
+            path: app.layout.manual_cut_paths[0].clone(),
+            corner: None,
+        });
+        assert!(app.cut_picker_owns_gesture(&ctx, page, 2.));
+    }
+
     #[test]
     fn guides_snap_edges_and_centers_without_breaking_axis_lock() {
         let mut app = super::A4Studio::default();
@@ -4492,6 +4657,10 @@ impl A4Studio {
             self.record_layer_edit(ObjectEdit::Visibility(before));
         }
         if let Some(index) = clicked {
+            self.cut_draft = None;
+            self.pick_cut_shapes = false;
+            self.selected_cut_shape = None;
+            self.cut_shape_drag = None;
             let modifiers = ui.input(|input| input.modifiers);
             if !modifiers.command && !modifiers.shift {
                 self.clear_selection();

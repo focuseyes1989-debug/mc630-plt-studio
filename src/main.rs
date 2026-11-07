@@ -17,6 +17,7 @@ mod recent;
 mod recovery;
 mod ruler;
 mod ui_theme;
+mod update_install;
 mod updater;
 mod workspace_session;
 
@@ -51,6 +52,8 @@ struct Studio {
     session: workspace_session::Store,
     restore_pending: bool,
     launch_requested: bool,
+    update_resume: bool,
+    update_cleanup: Option<PathBuf>,
     exit_active: Option<usize>,
     save_all: Option<SaveAll>,
     tab_drag: Option<usize>,
@@ -85,6 +88,8 @@ impl Default for Studio {
             session: Default::default(),
             restore_pending: true,
             launch_requested: false,
+            update_resume: false,
+            update_cleanup: None,
             exit_active: None,
             save_all: None,
             tab_drag: None,
@@ -179,8 +184,23 @@ impl Studio {
 }
 
 impl Studio {
+    fn begin_update_if_ready(&mut self, ctx: &egui::Context) {
+        if self.updates.wants_install()
+            && !self.closing_all
+            && self.save_all.is_none()
+            && !self.a4.tab_busy()
+        {
+            self.updates.begin_install();
+            self.exit_active = Some(self.active_tab);
+            self.close_tabs_only = false;
+            self.keep_tab = None;
+            self.closing_all = true;
+            self.a4.request_tab_close(ctx);
+        }
+    }
     fn cancel_close_all_if_needed(&mut self) {
         if self.a4.close_canceled {
+            self.updates.cancel_install();
             self.close_tabs_only = false;
             self.keep_tab = None;
             self.closing_all = false;
@@ -271,9 +291,10 @@ impl Studio {
             return;
         }
         self.restore_pending = false;
-        if !self.a4.reopen_tabs_enabled() {
+        if !self.a4.reopen_tabs_enabled() && !self.update_resume {
             return;
         }
+        self.update_resume = false;
         let Some(session) = self.session.saved.clone() else {
             return;
         };
@@ -380,6 +401,13 @@ impl Studio {
                     );
                 } else {
                     self.persist_workspace();
+                    if let Err(error) = self.updates.launch_if_pending(&self.workspace_snapshot()) {
+                        self.a4
+                            .workspace_status(format!("Update postponed: {error}"));
+                        self.a4.close_canceled = true;
+                        self.cancel_close_all_if_needed();
+                        return;
+                    }
                     self.exit_approved = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -689,12 +717,16 @@ impl Studio {
 }
 
 impl eframe::App for Studio {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(directory) = self.update_cleanup.take() {
+            update_install::cleanup_success(directory);
+        }
         if self.restore_pending && self.session.saved.is_some() {
             self.a4.suppress_single_project_startup();
         }
         self.a4.reopen_on_startup(ctx);
         self.a4.workspace_enabled = true;
+        self.begin_update_if_ready(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && !self.exit_approved {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.save_all = None;
@@ -739,8 +771,8 @@ impl eframe::App for Studio {
 
         if self.a4_mode {
             self.a4.apply_palette_state(self.palette.state);
-            self.a4.document_menu(ctx, &mut self.updates);
-            self.a4.standard_toolbar(ctx);
+            self.a4.document_menu(ctx, &mut self.updates, frame);
+            self.a4.standard_toolbar(ctx, frame);
             self.tab_bar(ctx);
             if self.save_all.is_some() {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -883,6 +915,10 @@ impl eframe::App for Studio {
 }
 
 fn main() -> eframe::Result {
+    if update_install::run_helper() {
+        return Ok(());
+    }
+    let update_resume = update_install::resume();
     if std::env::args_os().any(|a| a == "--register-file-association") {
         let result = std::env::current_exe()
             .map_err(|e| e.to_string())
@@ -913,6 +949,11 @@ fn main() -> eframe::Result {
             ui_theme::apply(&cc.egui_ctx);
 
             let mut studio = Studio::default();
+            if let Some(resume) = update_resume {
+                studio.session.saved = Some(resume.session);
+                studio.update_resume = true;
+                studio.update_cleanup = resume.cleanup_directory;
+            }
             if let Some(path) = launch_project {
                 studio.launch_requested = true;
                 studio.a4.queue_startup_project(path);
@@ -924,6 +965,36 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod workspace_tests {
+    #[test]
+    fn canceling_update_close_keeps_all_dirty_project_tabs() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::default();
+        studio.a4 = a4_ui::A4Studio::fresh_tab();
+        studio.a4.edit_workspace_fixture(21);
+        studio.add_tab(a4_ui::A4Studio::fresh_tab());
+        studio.a4.edit_workspace_fixture(22);
+        studio.updates = updater::UpdateDialog::ready_for_test();
+        studio.begin_update_if_ready(&ctx);
+        assert!(studio.closing_all && studio.a4.tab_busy());
+        studio.a4.choose_close_fixture("cancel", &ctx);
+        studio.cancel_close_all_if_needed();
+        assert!(!studio.closing_all && !studio.exit_approved);
+        assert_eq!(studio.tabs.len(), 2);
+        assert!(!studio.updates.wants_install());
+        assert!(!studio.tabs[0].as_ref().unwrap().tab_closed);
+    }
+    #[test]
+    fn failed_update_helper_start_reopens_tabs_instead_of_exiting() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::default();
+        studio.a4 = a4_ui::A4Studio::fresh_tab();
+        studio.updates = updater::UpdateDialog::ready_for_test();
+        studio.begin_update_if_ready(&ctx);
+        studio.handle_tabs(&ctx);
+        assert!(!studio.exit_approved);
+        assert!(!studio.closing_all);
+        assert!(!studio.a4.tab_closed);
+    }
     fn press_tab(studio: &mut Studio, ctx: &egui::Context, shift: bool) {
         let modifiers = if shift {
             egui::Modifiers::CTRL | egui::Modifiers::SHIFT
