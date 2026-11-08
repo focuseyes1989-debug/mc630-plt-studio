@@ -201,6 +201,7 @@ impl A4Studio {
         self.last_print = None;
         self.show_new = false;
         self.show_settings = false;
+          self.page_size_editor = None;
     }
     fn load_project(&mut self, path: PathBuf, ctx: &egui::Context) {
         if let Err(e) = self.load_project_from(path, ctx) {

@@ -147,7 +147,7 @@ impl A4Studio {
         format!("{}{}", name, if self.is_dirty() { " *" } else { "" })
     }
     pub fn tab_busy(&self) -> bool {
-        self.pending_action.is_some() || !self.autosave.offered.is_empty()
+        self.pending_action.is_some() || !self.autosave.offered.is_empty() || self.page_size_editor.is_some()
     }
     pub fn request_tab_close(&mut self, ctx: &egui::Context) {
         self.close_canceled = false;

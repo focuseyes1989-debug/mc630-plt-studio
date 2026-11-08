@@ -130,6 +130,7 @@ impl CanvasDrag {
     }
 }
 enum ObjectEdit {
+    PageSize(Box<Layout>),
     Positions(std::collections::BTreeMap<usize, sheet::Placement>),
     Layers(Box<Layout>),
     LastImage(Box<Layout>, Vec<u8>, String),
@@ -244,6 +245,7 @@ pub struct A4Studio {
     grid: bool,
     show_guide: bool,
     show_new: bool,
+    page_size_editor: Option<PageSizeEditor>,
     new_preset: usize,
     new_width: f64,
     new_height: f64,
@@ -274,10 +276,17 @@ pub struct A4Studio {
     print_panel: crate::native_print::PrintPanel,
 }
 
+struct PageSizeEditor {
+    width: f64,
+    height: f64,
+    unit: Unit,
+    error: Option<String>,
+}
+
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -924,6 +933,144 @@ impl A4Studio {
         self.art.is_some() || !self.layout.manual_cut_paths.is_empty()
     }
 
+    fn open_page_size(&mut self) {
+        self.page_size_editor = Some(PageSizeEditor {
+            width: self.layout.page_width,
+            height: self.layout.page_height,
+            unit: self.unit,
+            error: None,
+        });
+    }
+
+    fn apply_page_size(&mut self, width: f64, height: f64) -> Result<(), String> {
+        if !(50. ..=630.).contains(&width) || !(50. ..=2000.).contains(&height) {
+            return Err("Width: 50–630 mm. Height: 50–2000 mm.".into());
+        }
+        if self.layout.page_width == width && self.layout.page_height == height {
+            return Ok(());
+        }
+        let mut next = self.layout.clone();
+        next.page_width = width;
+        next.page_height = height;
+        if self.art.is_some() {
+            // Page width must not reflow existing implicit grid copies.
+            if let Ok(items) = self.layout.items() {
+                next.custom = items.into_iter().enumerate().collect();
+            }
+            next.items()
+                .map_err(|e| format!("Images do not fit this page. {e}"))?;
+        }
+        next.validate_manual_cut_paths()?;
+        for (axis, guides) in next.guides.iter().enumerate() {
+            if guides
+                .iter()
+                .any(|value| !(0. ..=[width, height][axis]).contains(value))
+            {
+                return Err("A guide is outside the new page. Move or delete it first.".into());
+            }
+        }
+        if self.ccd_trial
+            && let Some(art) = &self.art
+        {
+            self.ccd_profile.pair(&next, art)?;
+        }
+        let previous = std::mem::replace(&mut self.layout, next);
+        self.record_layer_edit(ObjectEdit::PageSize(Box::new(previous)));
+        self.preview_cache = None;
+        self.capacity_cache = None;
+        self.zoom = 1.;
+        self.canvas_pan = egui::Vec2::ZERO;
+        self.status = format!("Page size: {}", self.unit.size(width, height));
+        Ok(())
+    }
+
+    fn page_size_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.page_size_editor.take() else {
+            return;
+        };
+        let mut apply = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::new("page-size-dialog")).show(ctx, |ui| {
+            ui.set_width(320.);
+            ui.heading("Page size");
+            ui.add_space(10.);
+            egui::ComboBox::from_id_salt("page-size-preset")
+                .selected_text("Paper presets")
+                .width(305.)
+                .show_ui(ui, |ui| {
+                    for &(name, width, height) in sheet::PAPER_PRESETS {
+                        if ui
+                            .selectable_label(
+                                false,
+                                format!("{name}   {}", draft.unit.size(width, height)),
+                            )
+                            .clicked()
+                        {
+                            draft.width = width;
+                            draft.height = height;
+                            draft.error = None;
+                        }
+                    }
+                });
+            ui.add_space(10.);
+            egui::Grid::new("manual-page-size")
+                .num_columns(2)
+                .spacing([30., 10.])
+                .show(ui, |ui| {
+                    ui.label("Units");
+                    ui.horizontal(|ui| {
+                        for (label, unit) in
+                            [("mm", Unit::Mm), ("cm", Unit::Cm), ("in", Unit::Inches)]
+                        {
+                            ui.selectable_value(&mut draft.unit, unit, label);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Width");
+                    ui.add(
+                        draft
+                            .unit
+                            .distance(&mut draft.width)
+                            .range(50. ..=630.)
+                            .speed(1.),
+                    );
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.add(
+                        draft
+                            .unit
+                            .distance(&mut draft.height)
+                            .range(50. ..=2000.)
+                            .speed(1.),
+                    );
+                    ui.end_row();
+                });
+            ui.add_space(10.);
+            if ui.button("Swap width / height").clicked() {
+                std::mem::swap(&mut draft.width, &mut draft.height);
+                draft.error = None;
+            }
+            if let Some(error) = &draft.error {
+                ui.add_space(8.);
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.add_space(10.);
+            ui.separator();
+            ui.horizontal(|ui| {
+                apply = ui.button("Apply").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if apply {
+            if let Err(error) = self.apply_page_size(draft.width, draft.height) {
+                draft.error = Some(error);
+                self.page_size_editor = Some(draft);
+            }
+        } else if !cancel && !modal.should_close() {
+            self.page_size_editor = Some(draft);
+        }
+    }
+
     fn new_document_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_new {
             return;
@@ -1067,6 +1214,14 @@ impl A4Studio {
     fn swap_object_edit(&mut self, edit: ObjectEdit, ctx: &egui::Context) -> ObjectEdit {
         self.drag = None;
         match edit {
+            ObjectEdit::PageSize(mut layout) => {
+                std::mem::swap(&mut self.layout.page_width, &mut layout.page_width);
+                std::mem::swap(&mut self.layout.page_height, &mut layout.page_height);
+                std::mem::swap(&mut self.layout.custom, &mut layout.custom);
+                self.preview_cache = None;
+                self.capacity_cache = None;
+                ObjectEdit::PageSize(layout)
+            }
             ObjectEdit::ManualCuts(paths, enabled) => {
                 self.cut_draft = None;
                 self.selected_cut_shape = None;
@@ -2727,6 +2882,11 @@ impl A4Studio {
                     }
                 });
                 ui.menu_button("Layout", |ui| {
+                    if ui.button("Page size...").clicked() {
+                        self.open_page_size();
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui
                         .add_enabled(
                             self.layout.image_tiles.is_empty(),
@@ -2833,6 +2993,7 @@ impl A4Studio {
         #[cfg(windows)]
         self.print_panel.poll_job(ctx, &mut self.status);
         if !self.show_print_dialog
+            && self.page_size_editor.is_none()
             && self.pending_action.is_none()
             && self.autosave.offered.is_empty()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P))
@@ -2840,6 +3001,7 @@ impl A4Studio {
             self.show_print_dialog = true;
         }
         if !self.show_print_dialog
+            && self.page_size_editor.is_none()
             && self.pending_action.is_none()
             && self.autosave.offered.is_empty()
         {
@@ -2874,7 +3036,11 @@ impl A4Studio {
         self.selection.retain(|i| *i < self.layout.count);
         self.layout.hidden_images.retain(|i| *i < self.layout.count);
         self.sync_selection();
-        if !self.show_print_dialog && !ctx.wants_keyboard_input() && self.pending_action.is_none() {
+        if !self.show_print_dialog
+            && self.page_size_editor.is_none()
+            && !ctx.wants_keyboard_input()
+            && self.pending_action.is_none()
+        {
             if !self.show_new && !self.show_settings && self.drag.is_none() {
                 // egui-winit consumes Ctrl+V on press for text paste, but forwards release.
                 let paste = ctx.input(|input| {
@@ -2991,8 +3157,8 @@ impl A4Studio {
             ui.horizontal_wrapped(|ui| {
                 ui.small("Control");
                 ui.separator();
-                ui.label(self.layout.paper_label());
-                ui.small(self.unit.size(self.layout.page_width,self.layout.page_height));
+                if ui.button(format!("{}  {}",self.layout.paper_label(),self.unit.size(self.layout.page_width,self.layout.page_height)))
+                    .on_hover_text("Change page width and height").clicked() { self.open_page_size(); }
                 ui.separator();
                 if self.selection.len()>1 {
                     ui.strong(format!("{} images selected",self.selection.len()));
@@ -3472,11 +3638,78 @@ impl A4Studio {
                 }
             });
         self.print_dialog(ctx);
+        if self.pending_action.is_none() {
+            self.page_size_dialog(ctx);
+        }
     }
 }
 
 #[cfg(test)]
 mod selection_tests {
+    #[test]
+    fn custom_page_size_preserves_layout_exports_and_project_roundtrip() {
+        let ctx = egui::Context::default();
+        let mut app = super::A4Studio::default();
+        app.source = include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        app.retrace(&ctx);
+        let before = app.layout.clone();
+        let items = before.items().unwrap();
+        let paths = before.page_cut_paths(app.art.as_ref().unwrap()).unwrap();
+        app.apply_page_size(500., 400.).unwrap();
+        assert_eq!(app.layout.items().unwrap(), items);
+        assert_eq!(
+            app.layout
+                .page_cut_paths(app.art.as_ref().unwrap())
+                .unwrap(),
+            paths
+        );
+        let art = app.art.as_ref().unwrap();
+        assert!(
+            app.layout
+                .print_html(art)
+                .unwrap()
+                .contains("size:500mm 400mm")
+        );
+        assert!(
+            app.cut_file_data()
+                .unwrap()
+                .starts_with("TB25,20000,16000;")
+        );
+        let project = app.project_snapshot();
+        let source = project.source().unwrap();
+        let mut restored = super::A4Studio::default();
+        restored.install_project(project, source, &ctx);
+        assert_eq!(restored.layout.page_width, 500.);
+        assert_eq!(restored.layout.page_height, 400.);
+        assert_eq!(restored.layout.items().unwrap(), items);
+        app.undo_object(&ctx);
+        assert!(app.layout == before);
+        app.redo_object(&ctx);
+        assert_eq!(app.layout.page_width, 500.);
+    }
+
+    #[test]
+    fn page_resize_rejects_clipping_without_changing_the_document() {
+        let ctx = egui::Context::default();
+        let mut app = super::A4Studio::default();
+        app.source = include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        app.retrace(&ctx);
+        let before = app.layout.clone();
+        assert!(app.apply_page_size(100., 100.).is_err());
+        assert!(app.layout == before);
+        assert!(app.apply_page_size(f64::NAN, 300.).is_err());
+        app.art = None;
+        app.layout.guides = [vec![150.], vec![]];
+        assert!(app.apply_page_size(100., 200.).is_err());
+        app.layout.guides = Default::default();
+        app.layout.manual_cut_paths = vec![vec![[20., 20.], [150., 20.]]];
+        assert!(app.apply_page_size(100., 200.).is_err());
+        app.layout.manual_cut_paths.clear();
+        app.apply_page_size(50., 50.).unwrap();
+        assert_eq!(app.layout.page_width, 50.);
+        assert!(app.apply_page_size(631., 200.).is_err());
+    }
+
     #[test]
     fn export_data_preserves_image_ccd_and_standalone_manual_formats() {
         let ctx = egui::Context::default();
