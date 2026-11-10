@@ -136,6 +136,7 @@ impl Drop for Store {
     }
 }
 pub struct SnapshotData {
+    pub back: crate::duplex::BackDocument,
     pub name: String,
     pub source: Vec<u8>,
     pub settings: Preferences,
@@ -147,6 +148,7 @@ impl SnapshotData {
     pub fn record(self) -> Record {
         let mut project = Project::new(self.name, &self.source, self.settings, self.pan);
         project.aspect_ratio = self.ratio;
+        project.back = self.back;
         Record {
             project,
             original_path: self.original_path,

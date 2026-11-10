@@ -55,19 +55,33 @@ pub fn register(exe: &Path) -> Result<(), String> {
     if !exe.is_file() {
         return Err("Application executable not found.".into());
     }
+    let icon_dir = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("APPDATA"))
+        .map(PathBuf::from)
+        .ok_or("Cannot locate the user application-data folder.")?
+        .join("MC630-PLT-Studio")
+        .join("Icons");
+    std::fs::create_dir_all(&icon_dir).map_err(|e| e.to_string())?;
+    let icon = icon_dir.join("project.ico");
+    std::fs::write(&icon, include_bytes!("../assets/studio-icon.ico"))
+        .map_err(|e| e.to_string())?;
+    let icon_location = format!("\"{}\",0", icon.display());
     let progid = "MC630.PLTStudio.Project";
     let base = format!("Software\\Classes\\{progid}");
     let command = open_command(exe);
     set(&base, None, "MC630 Print & Cut Project")?;
-    set(
-        &format!("{base}\\DefaultIcon"),
-        None,
-        &format!("\"{}\",0", exe.display()),
-    )?;
+    set(&base, Some("FriendlyTypeName"), "MC630 Studio Project")?;
+    set(&format!("{base}\\DefaultIcon"), None, &icon_location)?;
+    set(&format!("{base}\\shell"), None, "open")?;
     set(&format!("{base}\\shell\\open\\command"), None, &command)?;
     set("Software\\Classes\\.mc630", None, progid)?;
     set(
         "Software\\Classes\\.mc630\\OpenWithProgids",
+        Some(progid),
+        "",
+    )?;
+    set(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mc630\\OpenWithProgids",
         Some(progid),
         "",
     )?;
@@ -76,10 +90,12 @@ pub fn register(exe: &Path) -> Result<(), String> {
         exe.file_name().unwrap().to_string_lossy()
     );
     set(&app, Some("FriendlyAppName"), "MC630 PLT Studio")?;
+    set(&format!("{app}\\DefaultIcon"), None, &icon_location)?;
     set(&format!("{app}\\shell\\open\\command"), None, &command)?;
     set(&format!("{app}\\SupportedTypes"), Some(".mc630"), "")?;
     let caps = "Software\\MC630PLTStudio\\Capabilities";
     set(caps, Some("ApplicationName"), "MC630 PLT Studio")?;
+    set(caps, Some("ApplicationIcon"), &icon_location)?;
     set(
         caps,
         Some("ApplicationDescription"),
@@ -94,12 +110,19 @@ pub fn register(exe: &Path) -> Result<(), String> {
     unsafe {
         SHChangeNotify(
             SHCNE_ASSOCCHANGED as i32,
-            SHCNF_IDLIST,
+            SHCNF_IDLIST | SHCNF_FLUSH,
             std::ptr::null(),
             std::ptr::null(),
         );
     }
     Ok(())
+}
+
+pub fn configure_default(exe: &Path) -> Result<(), String> {
+    register(exe)?;
+    webbrowser::open("ms-settings:defaultapps?registeredAppUser=MC630%20PLT%20Studio").map_err(
+        |e| format!("Registration completed, but Windows Default apps could not open: {e}"),
+    )
 }
 #[cfg(not(windows))]
 pub fn register(_: &Path) -> Result<(), String> {

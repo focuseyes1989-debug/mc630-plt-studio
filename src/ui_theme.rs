@@ -2,6 +2,29 @@ use eframe::egui;
 
 pub const BUTTON_RADIUS: egui::CornerRadius = egui::CornerRadius::same(4);
 
+pub fn close_icon(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Close project"));
+    if ui.is_rect_visible(rect) {
+        let color = if !ui.is_enabled() {
+            ui.visuals().weak_text_color()
+        } else if response.hovered() {
+            egui::Color32::from_rgb(190, 50, 50)
+        } else {
+            ui.visuals().text_color()
+        };
+        let center = rect.center();
+        let stroke = egui::Stroke::new(1.4_f32, color);
+        for direction in [-1., 1.] {
+            ui.painter().line_segment([
+                center + egui::vec2(-3.5, -3.5 * direction),
+                center + egui::vec2(3.5, 3.5 * direction),
+            ], stroke);
+        }
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Light);
     let mut style = (*ctx.style()).clone();

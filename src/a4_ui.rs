@@ -182,6 +182,15 @@ pub enum WorkspaceAction {
 }
 
 pub struct A4Studio {
+    io_job: Option<crate::project_io::Job>,
+    io_after_save: Option<DocumentAction>,
+    io_workspace_result: Option<Result<(),String>>,
+    io_workspace_waiting: bool,
+    io_close_requested: bool,
+    back: crate::duplex::BackEditor,
+    back_paths_cache: Option<(Layout, u64, std::sync::Arc<Vec<Vec<[f64;2]>>>)>,
+    show_back: bool,
+    print_back: bool,
     pub workspace_enabled: bool,
     pub workspace_action: Option<WorkspaceAction>,
     pub tab_closed: bool,
@@ -286,7 +295,7 @@ struct PageSizeEditor {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -608,6 +617,7 @@ impl A4Studio {
     }
 
     fn retrace(&mut self, ctx: &egui::Context) {
+        self.back_paths_cache=None;
         self.refresh_source_digest();
         self.preview_cache = None;
         self.outline_cache = Default::default();
@@ -960,6 +970,7 @@ impl A4Studio {
             next.items()
                 .map_err(|e| format!("Images do not fit this page. {e}"))?;
         }
+        self.back.data.validate([width,height])?;
         next.validate_manual_cut_paths()?;
         for (axis, guides) in next.guides.iter().enumerate() {
             if guides
@@ -1071,9 +1082,10 @@ impl A4Studio {
         }
     }
 
-    fn new_document_dialog(&mut self, ctx: &egui::Context) {
+    pub fn new_document_dialog_open(&self) -> bool { self.show_new }
+    pub fn new_document_dialog(&mut self, ctx: &egui::Context) -> bool {
         if !self.show_new {
-            return;
+            return false;
         }
         let mut open = true;
         let mut create = false;
@@ -1107,6 +1119,9 @@ impl A4Studio {
             self.show_new = false;
         }
         if create {
+            self.back = Default::default();
+            self.show_back = false;
+            self.print_back = false;
             self.layout = Layout {
                 page_width: self.new_width,
                 page_height: self.new_height,
@@ -1154,6 +1169,7 @@ impl A4Studio {
             );
             self.mark_saved();
         }
+        create
     }
     fn clear_selection(&mut self) {
         self.selection.clear();
@@ -2525,8 +2541,7 @@ impl A4Studio {
         self.finish_add_image(result, ctx);
     }
 
-    fn paste_image(&mut self, ctx: &egui::Context) {
-        let result = (|| -> Result<Vec<u8>, String> {
+    fn clipboard_image_bytes() -> Result<Vec<u8>, String> {
             let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
             let image = clipboard.get_image().map_err(|error| match error {
                 arboard::Error::ContentNotAvailable => {
@@ -2551,7 +2566,17 @@ impl A4Studio {
                 .write_to(&mut png, image::ImageFormat::Png)
                 .map_err(|e| e.to_string())?;
             Ok(png.into_inner())
-        })();
+    }
+
+    fn paste_image(&mut self, ctx: &egui::Context) {
+        if self.show_back && self.back.paste_copied([self.layout.page_width,self.layout.page_height]) { return; }
+        let result = Self::clipboard_image_bytes();
+        if self.show_back {
+            let paths = self.back_cut_paths();
+            let result = result.and_then(|bytes| self.back.add_image_bytes(bytes, "Clipboard image".into(), [self.layout.page_width,self.layout.page_height], &paths));
+            self.back.message = match result { Ok(()) => "Image pasted.".into(), Err(e) => format!("Cannot paste image: {e}") };
+            return;
+        }
         match result {
             Ok(bytes) if self.source.is_empty() => {
                 self.install_single_image(bytes, "Clipboard image".into(), ctx);
@@ -2882,6 +2907,8 @@ impl A4Studio {
                     }
                 });
                 ui.menu_button("Layout", |ui| {
+                    if ui.button("Back-side artwork…").clicked() { self.show_back = true; ui.close_menu(); }
+
                     if ui.button("Page size...").clicked() {
                         self.open_page_size();
                         ui.close_menu();
@@ -2944,17 +2971,18 @@ impl A4Studio {
                 }
                 ui.separator();
                 if Self::tool_icon(ui, 0, false, "Import image (Ctrl+O)") {
-                    self.choose_image(ctx);
+                    if self.show_back { self.import_back_image(); } else { self.choose_image(ctx); }
                 }
                 if ui
-                    .add_enabled_ui(self.art.is_some(), |ui| {
+                    .add_enabled_ui(self.show_back || self.art.is_some(), |ui| {
                         Self::tool_icon(ui, 10, false, "Add image")
                     })
                     .inner
                 {
-                    self.choose_add_image(ctx);
+                    if self.show_back { self.import_back_image(); } else { self.choose_add_image(ctx); }
                 }
                 if Self::tool_icon(ui, 2, self.show_print_dialog, "Print (Ctrl+P)") {
+                    self.print_back = self.show_back;
                     self.show_print_dialog = true;
                 }
                 if ui
@@ -2989,7 +3017,49 @@ impl A4Studio {
             });
         });
     }
+    fn back_cut_paths(&mut self) -> std::sync::Arc<Vec<Vec<[f64;2]>>> {
+        if let Some((layout,digest,paths))=&self.back_paths_cache {
+            if layout==&self.layout && *digest==self.source_digest {return paths.clone();}
+        }
+        let paths=if self.layout.use_manual_cut_paths {self.layout.manual_cut_paths.clone()}
+            else {self.art.as_ref().and_then(|a|self.layout.page_cut_paths_cached(a,&mut self.outline_cache).ok()).unwrap_or_default()};
+        let paths=std::sync::Arc::new(paths);
+        self.back_paths_cache=Some((self.layout.clone(),self.source_digest,paths.clone()));
+        paths
+    }
+    fn import_back_image(&mut self) {
+        let paths = self.back_cut_paths();
+        self.back.import([self.layout.page_width,self.layout.page_height], &paths);
+    }
     pub fn ui(&mut self, ctx: &egui::Context) {
+        let previous_side = self.show_back;
+        egui::TopBottomPanel::top("document-sides").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.show_back, false, "Main · Print & Cut");
+                ui.selectable_value(&mut self.show_back, true, "Back · Artwork");
+            });
+        });
+        if previous_side != self.show_back { self.print_back = self.show_back; }
+        #[cfg(windows)]
+        self.print_panel.poll_job(ctx, &mut self.status);
+        if self.show_back {
+            if !self.show_print_dialog && self.pending_action.is_none() && !self.show_settings
+                && !ctx.wants_keyboard_input() && ctx.input(|input| input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. }
+                        if modifiers.ctrl && !modifiers.alt && !modifiers.shift)
+                })) { self.paste_image(ctx); }
+            if !self.show_print_dialog && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL,egui::Key::S)) { self.save_project(false); }
+            if !self.show_print_dialog && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL,egui::Key::O)) { self.import_back_image(); }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL,egui::Key::P)) { self.print_back=true; self.show_print_dialog=true; }
+            let paths=self.back_cut_paths();
+            self.back.ui(ctx,[self.layout.page_width,self.layout.page_height],&paths,self.unit);
+            if self.back.paste_requested { self.back.paste_requested=false; self.paste_image(ctx); }
+            if self.back.print_requested {self.back.print_requested=false;self.print_back=true;self.show_print_dialog=true;}
+            self.settings_dialog(ctx);
+            self.print_dialog(ctx);
+            return;
+        }
+
         #[cfg(windows)]
         self.print_panel.poll_job(ctx, &mut self.status);
         if !self.show_print_dialog
@@ -3647,6 +3717,80 @@ impl A4Studio {
 #[cfg(test)]
 mod selection_tests {
     #[test]
+    fn close_requested_while_opening_is_handled_after_loading() {
+        let ctx=egui::Context::default();let path=project_test_path("async-close-open");
+        let mut fixture=A4Studio::fresh_tab();fixture.save_project_to(path.clone()).unwrap();
+        let mut app=A4Studio::fresh_tab();assert!(app.open_tab_file(path.clone(),&ctx));
+        app.request_tab_close(&ctx);assert!(!app.tab_closed);assert!(app.io_close_requested);
+        app.wait_project_io(&ctx);assert!(app.tab_closed);assert!(!app.io_close_requested);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn background_open_commits_prepared_images_and_failure_preserves_document() {
+        let ctx=egui::Context::default();let path=project_test_path("async-open");
+        let mut saved=A4Studio::fresh_tab();saved.source=include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();saved.retrace(&ctx);
+        saved.back.data.images.push(crate::duplex::tests::image_item());saved.save_project_to(path.clone()).unwrap();
+        let mut app=A4Studio::fresh_tab();app.layout.width=31.;
+        assert!(app.open_tab_file(path.clone(),&ctx));assert!(app.project_io_busy());assert_eq!(app.layout.width,31.);
+        let _=ctx.run(Default::default(),|ctx|app.project_io_progress(ctx));
+        app.wait_project_io(&ctx);assert!(app.art.is_some());assert!(app.texture.is_some());assert_eq!(app.back.data.images.len(),1);assert!(!app.is_dirty());
+        let before=app.document_signature();
+        let bad=project_test_path("async-bad");std::fs::write(&bad,b"invalid project").unwrap();
+        assert!(app.open_tab_file(bad.clone(),&ctx));app.wait_project_io(&ctx);
+        assert_eq!(before,app.document_signature());assert_eq!(app.project_path,Some(path.clone()));assert!(app.status.contains("Cannot open"));
+        std::fs::remove_file(path).unwrap();std::fs::remove_file(bad).unwrap();
+    }
+    #[test]
+    fn background_save_waits_before_close_and_failed_save_keeps_dirty_work() {
+        let ctx=egui::Context::default();let path=project_test_path("async-save");
+        let mut app=A4Studio::fresh_tab();app.save_project_to(path.clone()).unwrap();app.layout.width=31.;
+        app.request_action(DocumentAction::CloseProject,&ctx);
+        app.finish_unsaved(UnsavedChoice::Save,&ctx);
+        assert!(app.project_io_busy());assert!(!app.tab_closed);assert!(app.is_dirty());
+        app.wait_project_io(&ctx);assert!(app.tab_closed);assert_eq!(crate::project::Project::read(&path).unwrap().settings.layout.width,31.);
+        let mut app=A4Studio::fresh_tab();app.layout.width=32.;
+        app.project_path=Some(project_test_path("missing-parent").join("failure.mc630"));
+        app.request_action(DocumentAction::CloseProject,&ctx);app.finish_unsaved(UnsavedChoice::Save,&ctx);
+        app.wait_project_io(&ctx);assert!(!app.tab_closed);assert!(app.is_dirty());assert!(app.close_canceled);assert!(app.status.contains("Cannot save"));
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn back_contours_are_cached_and_recovery_includes_back_artwork() {
+        let ctx=egui::Context::default();let mut app=super::A4Studio::fresh_tab();
+        app.source=include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();app.retrace(&ctx);
+        let first=app.back_cut_paths();let second=app.back_cut_paths();assert!(std::sync::Arc::ptr_eq(&first,&second));
+        app.back.data.images.push(crate::duplex::tests::image_item());
+        app.back.data.images[0].rect[0]+=1.;let third=app.back_cut_paths();assert!(std::sync::Arc::ptr_eq(&first,&third));
+        app.layout.contour_offset+=0.1;let fourth=app.back_cut_paths();assert!(!std::sync::Arc::ptr_eq(&first,&fourth));
+        app.retrace(&ctx);let fifth=app.back_cut_paths();assert!(!std::sync::Arc::ptr_eq(&fourth,&fifth));
+        let record=app.autosave_data().record();assert_eq!(record.project.back.images.len(),1);assert_eq!(record.project.back.images[0].rect[0],31.);
+    }
+    #[test]
+    fn duplex_artwork_survives_project_roundtrip_without_changing_front_cut_data() {
+        let ctx=egui::Context::default();
+        let mut app=super::A4Studio::fresh_tab();
+        app.source=include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        app.retrace(&ctx);
+        app.mark_saved();
+        let before=app.layout.page_cut_paths(app.art.as_ref().unwrap()).unwrap();
+        app.back.data.images.push(crate::duplex::tests::image_item());
+        assert!(app.is_dirty());
+        let snapshot=app.project_snapshot();
+        let json=serde_json::to_value(&snapshot).unwrap();
+        let project:crate::project::Project=serde_json::from_value(json.clone()).unwrap();
+        let source=project.source().unwrap();
+        let mut restored=super::A4Studio::fresh_tab();
+        restored.install_project(project,source,&ctx);
+        assert_eq!(restored.back.data.images.len(),1);
+        assert_eq!(restored.back.data.images[0].rect,[30.,40.,20.,10.]);
+        assert_eq!(restored.layout.page_cut_paths(restored.art.as_ref().unwrap()).unwrap(),before);
+        let mut legacy=json; legacy.as_object_mut().unwrap().remove("back");
+        let legacy:crate::project::Project=serde_json::from_value(legacy).unwrap();
+        assert!(legacy.back.images.is_empty());
+        assert!(legacy.source().is_ok());
+    }
+
+    #[test]
     fn custom_page_size_preserves_layout_exports_and_project_roundtrip() {
         let ctx = egui::Context::default();
         let mut app = super::A4Studio::default();
@@ -3948,6 +4092,7 @@ mod selection_tests {
         app.recent_projects.remember(&last).unwrap();
         app.queue_startup_project(requested.clone());
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert_eq!(app.project_path, Some(requested.clone()));
         assert_eq!(app.layout.width, 31.);
         assert!(!app.is_dirty());
@@ -3971,10 +4116,12 @@ mod selection_tests {
         app.autosave.start(&root);
         app.queue_startup_project(requested.clone());
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert!(app.startup_pending);
         assert!(app.project_path.is_none());
         app.restore_recovery(&ctx).unwrap();
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert_eq!(app.layout.width, 31.);
         assert_eq!(
             app.pending_action,
@@ -3997,11 +4144,13 @@ mod selection_tests {
         let mut app = A4Studio::default();
         app.recent_projects.remember(&path).unwrap();
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert!(app.project_path.is_none());
         app.startup_pending = true;
         app.reopen_last_project = true;
         assert!(!app.is_dirty());
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert_eq!(
             std::fs::canonicalize(app.project_path.as_ref().unwrap()).unwrap(),
             std::fs::canonicalize(&path).unwrap()
@@ -4011,6 +4160,7 @@ mod selection_tests {
         assert!(!app.is_dirty());
         app.layout.width = 32.;
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert_eq!(app.layout.width, 32.);
         let mut json = serde_json::to_value(app.preferences()).unwrap();
         json.as_object_mut().unwrap().remove("reopen_last_project");
@@ -4039,10 +4189,12 @@ mod selection_tests {
         app.recent_projects.remember(&path).unwrap();
         app.autosave.start(&root);
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert!(app.project_path.is_none());
         assert_eq!(app.autosave.offered.len(), 1);
         app.restore_recovery(&ctx).unwrap();
         app.reopen_on_startup(&ctx);
+        app.wait_project_io(&ctx);
         assert_eq!(app.layout.width, 31.);
         app.autosave.clear();
         drop(app);
@@ -4052,9 +4204,10 @@ mod selection_tests {
         missing.reopen_last_project = true;
         missing.recent_projects.remember(&path).unwrap();
         missing.reopen_on_startup(&ctx);
+        missing.wait_project_io(&ctx);
         assert!(missing.project_path.is_none());
         assert!(!missing.is_dirty());
-        assert!(missing.status.contains("could not be reopened"));
+        assert!(missing.status.contains("Cannot open project"));
     }
     #[test]
     fn recent_projects_follow_successful_save_open_and_unsaved_guard() {
@@ -4262,6 +4415,7 @@ mod selection_tests {
         app.layout.height = 32.;
         app.request_action(DocumentAction::New, &ctx);
         app.finish_unsaved(UnsavedChoice::Save, &ctx);
+        app.wait_project_io(&ctx);
         assert!(app.show_new);
         assert!(!app.is_dirty());
         assert_eq!(
@@ -4277,6 +4431,7 @@ mod selection_tests {
         app.project_path = Some(path.join("missing-parent.mc630"));
         app.request_action(DocumentAction::New, &ctx);
         app.finish_unsaved(UnsavedChoice::Save, &ctx);
+        app.wait_project_io(&ctx);
         assert!(!app.show_new);
         assert!(app.is_dirty());
         assert_eq!(app.layout.height, 33.);
@@ -4930,18 +5085,31 @@ impl A4Studio {
                 self.layout.paper_label(),
                 self.unit
                     .size(self.layout.page_width, self.layout.page_height),
-                if self.ccd_trial {
+                if self.print_back {
+                    "Back artwork / no marks"
+                } else if self.ccd_trial {
                     "CCD marks"
                 } else {
                     "Manual marks"
                 },
             ));
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.print_back,false,"Main / front");
+                ui.selectable_value(&mut self.print_back,true,"Back");
+            });
+            if self.print_back { ui.small("Manual duplex · 100% · printer duplex off"); }
             ui.separator();
             #[cfg(windows)]
             {
                 let ccd = self.ccd_trial.then_some(&self.ccd_profile);
-                self.print_panel
-                    .ui(ui, self.art.as_ref(), &self.layout, ccd, &mut self.status);
+                if self.print_back {
+                    let data=&self.back.data;
+                    let page=[self.layout.page_width,self.layout.page_height];
+                    let render=|| data.raster(page);
+                    self.print_panel.ui_with_raster(ui,None,&self.layout,None,&mut self.status,Some(&render));
+                } else {
+                    self.print_panel.ui(ui, self.art.as_ref(), &self.layout, ccd, &mut self.status);
+                }
             }
             #[cfg(not(windows))]
             ui.label("Direct printing is available on Windows.");

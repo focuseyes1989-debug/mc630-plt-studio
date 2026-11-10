@@ -17,6 +17,7 @@ impl A4Studio {
         prefs.zoom = 1.;
         prefs.reopen_last_project=false;
         let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.back.data.hash_signature(&mut hash);
         self.source_digest.hash(&mut hash);
         self.name.hash(&mut hash);
         self.ratio.to_bits().hash(&mut hash);
@@ -52,7 +53,7 @@ impl A4Studio {
         }
     }
     fn request_action(&mut self, action: DocumentAction, ctx: &egui::Context) {
-        if self.pending_action.is_some() || !self.autosave.offered.is_empty() {
+        if self.io_job.is_some() || self.pending_action.is_some() || !self.autosave.offered.is_empty() {
             return;
         }
         if self.workspace_enabled {
@@ -93,7 +94,7 @@ impl A4Studio {
             UnsavedChoice::Discard => self.execute_action(action, ctx),
             UnsavedChoice::Save => {
                 if self.save_project(false) {
-                    self.execute_action(action, ctx);
+                    if self.io_job.is_some(){self.io_after_save=Some(action);}else{self.execute_action(action,ctx);}
                 } else { self.close_canceled = true; }
             }
         }
@@ -147,9 +148,10 @@ impl A4Studio {
         format!("{}{}", name, if self.is_dirty() { " *" } else { "" })
     }
     pub fn tab_busy(&self) -> bool {
-        self.pending_action.is_some() || !self.autosave.offered.is_empty() || self.page_size_editor.is_some()
+        self.io_job.is_some() || self.pending_action.is_some() || !self.autosave.offered.is_empty() || self.page_size_editor.is_some()
     }
     pub fn request_tab_close(&mut self, ctx: &egui::Context) {
+        if self.io_job.is_some(){self.io_close_requested=true;return;}
         self.close_canceled = false;
         self.request_action(DocumentAction::CloseProject, ctx);
     }
@@ -160,10 +162,11 @@ impl A4Studio {
         doc
     }
     pub fn open_tab_file(&mut self, path: PathBuf, ctx: &egui::Context) -> bool {
-        match self.load_project_from(path, ctx) {
-            Ok(()) => true,
-            Err(e) => { self.status = format!("Cannot open project: {e}"); false }
-        }
+        let _=ctx;
+        if self.io_job.is_some(){return false;}
+        if !path.is_file(){self.status=format!("Cannot open project: file not found: {}",path.display());return false;}
+        self.io_job=Some(crate::project_io::Job::open(path));
+        true
     }
     pub fn show_new_tab_dialog(&mut self) { self.show_new = true; }
     pub fn same_project(&self, path: &std::path::Path) -> bool {

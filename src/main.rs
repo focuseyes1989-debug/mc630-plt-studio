@@ -7,12 +7,14 @@ use mc630_plt_studio::{Drawing, Settings};
 use std::path::PathBuf;
 
 mod a4_ui;
+mod duplex;
 mod cut_tools;
 mod file_association;
 mod palette_state;
 mod photo_size;
 mod preferences;
 mod project;
+mod project_io;
 mod recent;
 mod recovery;
 mod ruler;
@@ -45,6 +47,8 @@ struct Studio {
     a4_mode: bool,
     tabs: Vec<Option<a4_ui::A4Studio>>,
     active_tab: usize,
+    empty_workspace: bool,
+    pending_new: Option<a4_ui::A4Studio>,
     closing_all: bool,
     close_tabs_only: bool,
     keep_tab: Option<usize>,
@@ -81,6 +85,8 @@ impl Default for Studio {
             a4_mode: true,
             tabs: vec![None],
             active_tab: 0,
+            empty_workspace: true,
+            pending_new: None,
             closing_all: false,
             close_tabs_only: false,
             keep_tab: None,
@@ -231,7 +237,9 @@ impl Studio {
             ctx.request_repaint();
             return;
         }
-        match save(&mut self.a4) {
+        let result=save(&mut self.a4);
+        if self.a4.project_io_busy() {self.save_all=Some(run);return;}
+        match result {
             Ok(()) => {
                 run.saved += 1;
                 run.next += 1;
@@ -322,7 +330,7 @@ impl Studio {
                     failed.push(path.display().to_string());
                     continue;
                 }
-                if self.a4.blank_tab() {
+                if self.a4.blank_tab() && !self.a4.project_io_busy() {
                     self.a4 = next;
                 } else {
                     self.add_tab(next);
@@ -358,6 +366,13 @@ impl Studio {
         }
     }
     fn add_tab(&mut self, mut next: a4_ui::A4Studio) {
+        if self.empty_workspace && self.a4.blank_tab() && !self.a4.project_io_busy() {
+            next.set_reopen_tabs(self.a4.reopen_tabs_enabled());
+            self.a4 = next;
+            self.empty_workspace = false;
+            return;
+        }
+        self.empty_workspace = false;
         next.set_reopen_tabs(self.a4.reopen_tabs_enabled());
         let previous = std::mem::replace(&mut self.a4, next);
         self.tabs[self.active_tab] = Some(previous);
@@ -384,6 +399,7 @@ impl Studio {
                         self.switch_tab(index);
                     } else {
                         self.a4 = a4_ui::A4Studio::fresh_tab();
+                        self.empty_workspace = true;
                     }
                     self.tabs = vec![None];
                     self.active_tab = 0;
@@ -416,6 +432,7 @@ impl Studio {
             self.tabs.remove(self.active_tab);
             if self.tabs.is_empty() {
                 self.a4 = a4_ui::A4Studio::fresh_tab();
+                        self.empty_workspace = true;
                 self.tabs.push(None);
                 self.active_tab = 0;
             } else {
@@ -449,7 +466,7 @@ impl Studio {
                 a4_ui::WorkspaceAction::New => {
                     let mut next = a4_ui::A4Studio::fresh_tab();
                     next.show_new_tab_dialog();
-                    self.add_tab(next);
+                    self.pending_new = Some(next);
                 }
                 a4_ui::WorkspaceAction::Open(path) => {
                     if self.a4.same_project(&path) {
@@ -489,7 +506,7 @@ impl Studio {
         self.switch_tab(index);
         match command {
             TabCommand::Save => {
-                let _ = self.a4.save_for_workspace();
+                self.a4.save_current_tab();
                 self.persist_workspace();
             }
             TabCommand::Close => self.a4.request_tab_close(ctx),
@@ -579,24 +596,30 @@ impl Studio {
         let mut new = false;
         let mut context_command = None;
         let mut tab_rects = Vec::new();
-        let busy = self.a4.tab_busy() || self.closing_all || self.save_all.is_some();
+        let busy = self.a4.tab_busy() || self.closing_all || self.save_all.is_some() || self.pending_new.is_some();
         let bar = egui::TopBottomPanel::top("project-tabs").show(ctx, |ui| {
             egui::ScrollArea::horizontal()
                 .drag_to_scroll(false)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for index in 0..self.tabs.len() {
+                        for index in 0..if self.empty_workspace { 0 } else { self.tabs.len() } {
                             let label = if index == self.active_tab {
                                 self.a4.tab_label()
                             } else {
                                 self.tabs[index].as_ref().unwrap().tab_label()
                             };
                             ui.push_id(index, |ui| {
-                                let tab = ui.horizontal(|ui| {
+                                let active = index == self.active_tab;
+                                let visuals = ui.visuals();
+                                let fill = if active { visuals.selection.bg_fill } else { visuals.widgets.inactive.bg_fill };
+                                let stroke = if active { visuals.selection.stroke } else { visuals.widgets.inactive.bg_stroke };
+                                let tab = egui::Frame::NONE.fill(fill).stroke(stroke).corner_radius(ui_theme::BUTTON_RADIUS).inner_margin(egui::Margin::symmetric(3, 1)).show(ui, |ui| {
+                                  ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.;
                                     let response = ui.add_enabled(
                                         !busy,
                                         egui::Button::new(label)
-                                            .selected(index == self.active_tab)
+                                            .frame(false)
                                             .corner_radius(ui_theme::BUTTON_RADIUS)
                                             .sense(egui::Sense::click_and_drag()),
                                     );
@@ -643,13 +666,15 @@ impl Studio {
                                         });
                                     });
                                     if ui
-                                        .add_enabled(!busy, egui::Button::new("×"))
+                                        .add_enabled_ui(!busy, ui_theme::close_icon)
+                                        .inner
                                         .on_hover_text("Close project (Ctrl+W)")
                                         .clicked()
                                     {
                                         close = Some(index);
                                     }
                                 });
+                                  });
                                 tab_rects.push(tab.response.rect);
                             });
                             ui.separator();
@@ -711,13 +736,20 @@ impl Studio {
         if new {
             let mut next = a4_ui::A4Studio::fresh_tab();
             next.show_new_tab_dialog();
-            self.add_tab(next);
+            self.pending_new = Some(next);
         }
     }
 }
 
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.a4.poll_project_io(ctx);
+        for tab in self.tabs.iter_mut().flatten(){tab.poll_project_io(ctx);}
+        if self.a4.project_io_busy() {
+            if ctx.input(|i|i.viewport().close_requested()){ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);}
+            self.a4.project_io_progress(ctx);
+            return;
+        }
         if let Some(directory) = self.update_cleanup.take() {
             update_install::cleanup_success(directory);
         }
@@ -744,6 +776,7 @@ impl eframe::App for Studio {
         self.handle_tabs(ctx);
         self.restore_workspace(ctx);
         self.tick_save_all_with(ctx, a4_ui::A4Studio::save_for_workspace);
+        if !self.a4.blank_tab() { self.empty_workspace = false; }
         self.tab_shortcuts(ctx);
         if !self.restore_pending && !self.closing_all && !self.exit_approved {
             self.persist_workspace();
@@ -785,7 +818,28 @@ impl eframe::App for Studio {
                 });
                 return;
             }
-            self.a4.ui(ctx);
+            if let Some(mut next) = self.pending_new.take() {
+                if next.new_document_dialog(ctx) {
+                    self.add_tab(next);
+                } else if next.new_document_dialog_open() {
+                    self.pending_new = Some(next);
+                }
+            }
+            if self.empty_workspace {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        if ui.button("+ New document").clicked() {
+                            self.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
+                        }
+                    });
+                });
+                if self.pending_new.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N)) {
+                    self.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
+                }
+                self.a4.settings_dialog(ctx);
+            } else {
+                self.a4.ui(ctx);
+            }
             if !ctx.input(|i| i.pointer.any_down()) {
                 if let Err(error) = self.palette.persist(self.a4.palette_state()) {
                     self.a4
@@ -965,10 +1019,33 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod workspace_tests {
+    fn wait_all_io(studio:&mut Studio,ctx:&egui::Context){
+        studio.a4.wait_project_io(ctx);
+        for tab in studio.tabs.iter_mut().flatten(){tab.wait_project_io(ctx);}
+    }
+
+    #[test]
+    fn startup_has_no_document_and_new_waits_for_confirmation() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::default();
+        assert!(studio.empty_workspace);
+        studio.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
+        studio.handle_tabs(&ctx);
+        assert!(studio.empty_workspace);
+        assert!(studio.pending_new.as_ref().unwrap().new_document_dialog_open());
+        studio.pending_new = None; // Cancel leaves the workspace empty.
+        assert!(studio.empty_workspace);
+        studio.add_tab(a4_ui::A4Studio::fresh_tab());
+        assert!(!studio.empty_workspace);
+        assert_eq!(studio.tabs.len(), 1);
+        studio.a4.request_tab_close(&ctx);
+        studio.handle_tabs(&ctx);
+        assert!(studio.empty_workspace);
+    }
     #[test]
     fn canceling_update_close_keeps_all_dirty_project_tabs() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4 = a4_ui::A4Studio::fresh_tab();
         studio.a4.edit_workspace_fixture(21);
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
@@ -986,7 +1063,7 @@ mod workspace_tests {
     #[test]
     fn failed_update_helper_start_reopens_tabs_instead_of_exiting() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4 = a4_ui::A4Studio::fresh_tab();
         studio.updates = updater::UpdateDialog::ready_for_test();
         studio.begin_update_if_ready(&ctx);
@@ -1034,7 +1111,7 @@ mod workspace_tests {
     #[test]
     fn ctrl_tab_cycles_in_current_order_wraps_and_preserves_edits() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
@@ -1056,7 +1133,7 @@ mod workspace_tests {
     #[test]
     fn ctrl_tab_does_not_switch_during_unsaved_prompt_or_batch_save() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
         studio.a4.request_tab_close(&ctx);
@@ -1080,7 +1157,7 @@ mod workspace_tests {
         let root = std::env::temp_dir().join(format!("mc630-reorder-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let paths: Vec<_> = (0..3).map(|i| root.join(format!("{i}.mc630"))).collect();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         for (i, path) in paths.iter().enumerate() {
             let mut doc = a4_ui::A4Studio::fresh_tab();
             doc.save_workspace_fixture(path.clone());
@@ -1107,11 +1184,12 @@ mod workspace_tests {
             studio.workspace_snapshot().projects,
             vec![paths[1].clone(), paths[0].clone(), paths[2].clone()]
         );
-        let mut reopened = Studio::default();
+        let mut reopened = Studio { empty_workspace: false, ..Studio::default() };
         reopened.a4 = a4_ui::A4Studio::fresh_tab();
         reopened.a4.set_reopen_tabs(true);
         reopened.session.saved = studio.session.saved.clone();
         reopened.restore_workspace(&egui::Context::default());
+        wait_all_io(&mut reopened,&egui::Context::default());
         assert_eq!(reopened.workspace_snapshot(), studio.workspace_snapshot());
         for path in paths {
             std::fs::remove_file(path).unwrap();
@@ -1120,7 +1198,7 @@ mod workspace_tests {
     }
     #[test]
     fn reordering_is_blocked_while_closing_and_preserves_unsaved_state() {
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
         studio.closing_all = true;
@@ -1137,7 +1215,7 @@ mod workspace_tests {
     #[test]
     fn close_others_retains_target_tab_and_cancel_keeps_all_edits() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
@@ -1165,11 +1243,12 @@ mod workspace_tests {
         let ctx = egui::Context::default();
         let path =
             std::env::temp_dir().join(format!("mc630-context-save-{}.mc630", std::process::id()));
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4.save_workspace_fixture(path.clone());
         studio.a4.edit_workspace_fixture(3);
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.tab_command(0, TabCommand::Save, &ctx);
+        wait_all_io(&mut studio,&ctx);
         assert_eq!(
             project::Project::read(&path).unwrap().settings.layout.count,
             3
@@ -1187,7 +1266,7 @@ mod workspace_tests {
     #[test]
     fn close_all_keeps_app_open_and_clears_restored_session() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.workspace_action = Some(a4_ui::WorkspaceAction::CloseAll);
         for _ in 0..4 {
@@ -1202,7 +1281,7 @@ mod workspace_tests {
     #[test]
     fn close_all_cancel_retains_every_tab_and_discard_finishes() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
         studio.switch_tab(0);
@@ -1233,13 +1312,14 @@ mod workspace_tests {
         let ctx = egui::Context::default();
         let path =
             std::env::temp_dir().join(format!("mc630-close-all-save-{}.mc630", std::process::id()));
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4.save_workspace_fixture(path.clone());
         studio.a4.edit_workspace_fixture(3);
         studio.a4.workspace_action = Some(a4_ui::WorkspaceAction::CloseAll);
         studio.handle_tabs(&ctx);
         assert!(studio.a4.tab_busy());
         studio.a4.choose_close_fixture("save", &ctx);
+        wait_all_io(&mut studio,&ctx);
         studio.handle_tabs(&ctx);
         assert_eq!(
             project::Project::read(&path).unwrap().settings.layout.count,
@@ -1254,7 +1334,7 @@ mod workspace_tests {
     fn save_all_writes_every_project_and_restores_selected_tab() {
         let root = std::env::temp_dir().join(format!("mc630-save-all-ok-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4 = a4_ui::A4Studio::fresh_tab();
         let mut paths = Vec::new();
         for index in 0..3 {
@@ -1277,8 +1357,10 @@ mod workspace_tests {
             prepared: false,
         });
         let ctx = egui::Context::default();
-        for _ in 0..6 {
+        for _ in 0..30 {
             studio.tick_save_all_with(&ctx, a4_ui::A4Studio::save_for_workspace);
+            wait_all_io(&mut studio,&ctx);
+            if studio.save_all.is_none(){break;}
         }
         assert!(studio.save_all.is_none());
         assert_eq!(studio.active_tab, 1);
@@ -1302,7 +1384,7 @@ mod workspace_tests {
     #[test]
     fn save_all_cancel_stops_at_that_tab_and_keeps_remaining_edits() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         studio.a4.edit_workspace_fixture(3);
@@ -1341,7 +1423,7 @@ mod workspace_tests {
         fixture.save_workspace_fixture(a.clone());
         fixture.save_workspace_fixture(b.clone());
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4 = a4_ui::A4Studio::fresh_tab();
         studio.a4.set_reopen_tabs(true);
         studio
@@ -1352,6 +1434,7 @@ mod workspace_tests {
             })
             .unwrap();
         studio.restore_workspace(&ctx);
+        wait_all_io(&mut studio,&ctx);
         assert_eq!(studio.tabs.len(), 2);
         assert_eq!(studio.active_tab, 0);
         assert_eq!(
@@ -1388,7 +1471,7 @@ mod workspace_tests {
     }
     #[test]
     fn disabled_restore_preserves_blank_startup() {
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4 = a4_ui::A4Studio::fresh_tab();
         studio.a4.set_reopen_tabs(false);
         studio
@@ -1408,7 +1491,7 @@ mod workspace_tests {
     #[test]
     fn switching_and_closing_keeps_other_documents() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4.workspace_status("first".into());
         studio.add_tab(a4_ui::A4Studio::fresh_tab());
         assert_eq!(studio.active_tab, 1);
@@ -1429,14 +1512,16 @@ mod workspace_tests {
     #[test]
     fn new_and_open_requests_leave_existing_tab_intact() {
         let ctx = egui::Context::default();
-        let mut studio = Studio::default();
+        let mut studio = Studio { empty_workspace: false, ..Studio::default() };
         studio.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
         studio.handle_tabs(&ctx);
-        assert_eq!(studio.tabs.len(), 2);
+        assert_eq!(studio.tabs.len(), 1);
+        assert!(studio.pending_new.is_some());
         studio.a4.workspace_action =
             Some(a4_ui::WorkspaceAction::Open(PathBuf::from("missing.mc630")));
         studio.handle_tabs(&ctx);
-        assert_eq!(studio.tabs.len(), 2);
+        assert_eq!(studio.tabs.len(), 1);
+        studio.pending_new = None;
         studio.closing_all = true;
         studio.a4.request_tab_close(&ctx);
         studio.handle_tabs(&ctx);

@@ -3,6 +3,7 @@ impl A4Studio {
         let mut settings = self.preferences();
         settings.layout = self.layout.clone();
         crate::recovery::SnapshotData {
+            back: self.back.data.clone(),
             name: self.name.clone(),
             source: self.source.clone(),
             settings,
@@ -23,7 +24,7 @@ impl A4Studio {
             self.autosave.observed = Some(signature);
             self.autosave.changed_at = std::time::Instant::now();
         }
-        if !self.is_dirty() {
+        if self.saved_signature == signature {
             if self.autosave.last_written.is_some() || self.autosave.busy() {
                 self.autosave.clear();
             }
@@ -33,6 +34,7 @@ impl A4Studio {
             || self.autosave.busy()
             || self.autosave.store.is_none()
             || self.autosave.last_written == Some(signature)
+            || self.back.interacting()
             || self.drag.is_some()
         {
             return;

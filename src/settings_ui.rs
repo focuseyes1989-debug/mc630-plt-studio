@@ -136,8 +136,8 @@ egui::ComboBox::from_id_salt("settings-unit").selected_text(match self.unit{Unit
                         ui.selectable_value(&mut self.unit,Unit::Inches,"Inches (in) - default");ui.selectable_value(&mut self.unit,Unit::Cm,"Centimetres (cm)");ui.selectable_value(&mut self.unit,Unit::Mm,"Millimetres (mm)");
                     });
                     ui.checkbox(&mut self.reopen_last_project,"Reopen all project tabs on startup");
-                    if ui.button("Associate .mc630 project files with this app").clicked(){
-                        self.status=match std::env::current_exe().map_err(|e|e.to_string()).and_then(|exe|crate::file_association::register(&exe)){Ok(())=>"Registered .mc630 files for the current Windows user. If Windows asks, choose MC630 PLT Studio as the default app.".into(),Err(e)=>format!("Could not register project files: {e}")};
+                    if ui.button("Set Studio as default for .mc630").clicked(){
+                        self.status=match std::env::current_exe().map_err(|e|e.to_string()).and_then(|exe|crate::file_association::configure_default(&exe)){Ok(())=>"Project icon registered. In Windows Default apps, choose MC630 PLT Studio for .mc630 files.".into(),Err(e)=>format!("Could not register project files: {e}")};
                     }
                     ui.horizontal(|ui|{ui.label("Arrow key step");ui.add(self.unit.distance(&mut self.nudge_fine).range(0.001..=100.));});
                     ui.horizontal(|ui|{ui.label("Shift + Arrow step");ui.add(self.unit.distance(&mut self.nudge_coarse).range(0.001..=100.));});

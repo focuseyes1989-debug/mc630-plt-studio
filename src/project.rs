@@ -13,6 +13,8 @@ pub struct Project {
     pub settings: Preferences,
     pub canvas_pan: [f32; 2],
     pub aspect_ratio: f64,
+    #[serde(default)]
+    pub back: crate::duplex::BackDocument,
 }
 impl Project {
     pub fn new(
@@ -29,18 +31,22 @@ impl Project {
             settings,
             canvas_pan,
             aspect_ratio: 1.,
+            back: Default::default(),
         }
     }
+    #[cfg(test)]
     pub fn source(&self) -> Result<Vec<u8>, String> {
-        self.decode_source(false)
+        self.decode_source(false, true)
     }
     pub fn recovery_source(&self) -> Result<Vec<u8>, String> {
-        self.decode_source(true)
+        self.decode_source(true, true)
     }
-    fn decode_source(&self, recovery: bool) -> Result<Vec<u8>, String> {
+    pub fn source_untraced(&self)->Result<Vec<u8>,String>{self.decode_source(false,false)}
+    fn decode_source(&self, recovery: bool, trace:bool) -> Result<Vec<u8>, String> {
         if self.format != FORMAT || self.version != VERSION {
             return Err("Unsupported project format or version.".into());
         }
+        if trace {self.back.validate([self.settings.layout.page_width, self.settings.layout.page_height])?;}else{self.back.validate_geometry([self.settings.layout.page_width,self.settings.layout.page_height])?;}
         if recovery {
             self.settings.validate_values()?;
         } else {
@@ -76,7 +82,7 @@ impl Project {
         if !source.is_empty() && recovery {
             image::load_from_memory(&source).map_err(|e| format!("Damaged recovery image: {e}"))?;
         }
-        if (!source.is_empty() && !recovery) || !self.settings.layout.image_tiles.is_empty() {
+        if trace && ((!source.is_empty() && !recovery) || !self.settings.layout.image_tiles.is_empty()) {
             self.settings.layout.trace_images(
                 &source,
                 self.settings.remove_white,
@@ -101,12 +107,16 @@ impl Project {
         }
         serde_json::from_slice(&bytes).map_err(|e| format!("Cannot read project: {e}"))
     }
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        self.source()?;
+    #[cfg(test)]
+    pub fn save(&self, path: &Path) -> Result<(), String> { self.source()?; self.save_progress(path, |_|{}) }
+    pub fn save_progress(&self, path:&Path, progress:impl Fn(u8))->Result<(),String>{
+        self.source_untraced()?;
+        progress(50);
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_FILE {
             return Err("Project exceeds the 64 MB limit.".into());
         }
+        progress(85);
         write_atomic(path, &bytes)
     }
 }
