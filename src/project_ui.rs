@@ -201,7 +201,7 @@ impl A4Studio {
         self.pick_cut_shapes = false;
         self.selected_cut_shape = None;
         self.cut_shape_drag = None;
-        self.panning = false;
+        self.camera = Default::default();
         self.undo.clear();
         self.redo.clear();
         self.last_print = None;

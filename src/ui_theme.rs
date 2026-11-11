@@ -2,7 +2,7 @@ use eframe::egui;
 
 pub const BUTTON_RADIUS: egui::CornerRadius = egui::CornerRadius::same(5);
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(21, 116, 196);
-pub const CANVAS: egui::Color32 = egui::Color32::from_rgb(235, 233, 230);
+pub const CANVAS: egui::Color32 = egui::Color32::from_rgb(220, 220, 224);
 
 pub fn close_icon(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click());
@@ -447,4 +447,38 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
         .on_hover_text(hint)
         .on_disabled_hover_text(hint)
         .clicked()
+}
+
+pub const CUT_COLORS: [(&str, egui::Color32); 7] = [
+    ("Red", egui::Color32::RED),
+    ("Black", egui::Color32::BLACK),
+    ("Gray", egui::Color32::GRAY),
+    ("Green", egui::Color32::from_rgb(0, 135, 85)),
+    ("Blue", egui::Color32::BLUE),
+    ("Purple", egui::Color32::from_rgb(130, 50, 170)),
+    ("Orange", egui::Color32::from_rgb(218, 113, 34)),
+];
+
+pub fn paint_workspace(painter: &egui::Painter, area: egui::Rect) {
+    let visible = painter.clip_rect().intersect(area);
+    painter.rect_filled(visible, 0., CANVAS);
+    if !visible.is_positive() {
+        return;
+    }
+    let mut dots = egui::Mesh::default();
+    let spacing = 22.;
+    let ink = egui::Color32::from_rgb(166, 167, 175);
+    let mut y = (visible.top() / spacing).ceil() * spacing;
+    while y < visible.bottom() {
+        let mut x = (visible.left() / spacing).ceil() * spacing;
+        while x < visible.right() {
+            dots.add_colored_rect(
+                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.4, 1.4)),
+                ink,
+            );
+            x += spacing;
+        }
+        y += spacing;
+    }
+    painter.add(egui::Shape::mesh(dots));
 }

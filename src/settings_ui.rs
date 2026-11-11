@@ -200,7 +200,7 @@ ui.checkbox(&mut self.ccd_trial,"CCD camera - four dots");
 ui.checkbox(&mut self.rulers,"Show rulers");ui.checkbox(&mut self.grid,"Show grid");
                     ui.add(egui::Slider::new(&mut self.zoom,0.5..=16.0).custom_formatter(|v,_|format!("{:.0}%",v*100.)).text("Zoom"));
                     ui.horizontal(|ui| { ui.label("Cut line color"); ui.color_edit_button_srgba(&mut self.contour_color); });
-                    if icon_button(ui, Icon::Fit, "Fit page / reset view"){self.zoom=1.;self.canvas_pan=egui::Vec2::ZERO;}
+                    if icon_button(ui, Icon::Fit, "Fit page / reset view"){self.camera.fit(ctx);}
 }
 8 => {
 if icon_button(ui, Icon::Print, "Open Print dialog") {

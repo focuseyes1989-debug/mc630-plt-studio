@@ -9,6 +9,7 @@ use mc630_plt_studio::{Drawing, Settings};
 use std::path::PathBuf;
 
 mod a4_ui;
+mod canvas_camera;
 mod duplex;
 mod cut_tools;
 mod file_association;
@@ -822,20 +823,20 @@ impl eframe::App for Studio {
             }
             if let Some(mut next) = self.pending_new.take() {
                 if next.new_document_dialog(ctx) {
+                    next.apply_palette_state(self.palette.state);
                     self.add_tab(next);
                 } else if next.new_document_dialog_open() {
                     self.pending_new = Some(next);
                 }
             }
             if self.empty_workspace {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let button = egui::Rect::from_center_size(ui.max_rect().center(), egui::vec2(32., 32.));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
-                        if icon_button(ui, Icon::New, "New document (Ctrl+N)") {
-                            self.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
-                        }
-                    });
-                });
+                if let Some(preset) = self.a4.home_workspace(ctx, self.pending_new.is_none()) {
+                    let mut next = a4_ui::A4Studio::fresh_tab();
+                    next.select_new_paper(preset);
+                    next.show_new_tab_dialog();
+                    self.pending_new = Some(next);
+                    ctx.request_repaint();
+                }
                 if self.pending_new.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N)) {
                     self.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
                 }

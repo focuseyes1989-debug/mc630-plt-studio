@@ -211,6 +211,8 @@ pub struct A4Studio {
     unit: Unit,
     show_settings: bool,
     show_properties: bool,
+    show_navigator: bool,
+    navigator_view: Option<(egui::Rect, egui::Rect)>,
     palette_geometry: Option<crate::palette_state::Geometry>,
     section_palettes: [crate::palette_state::Section; 3],
     show_margin_guides: bool,
@@ -247,7 +249,7 @@ pub struct A4Studio {
     show_print_dialog: bool,
     zoom: f32,
     canvas_pan: egui::Vec2,
-    panning: bool,
+    camera: crate::canvas_camera::CanvasCamera,
     rulers: bool,
     guide_drag: Option<GuideDrag>,
     selected_guide: Option<(usize, usize)>,
@@ -297,7 +299,7 @@ struct PageSizeEditor {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,show_navigator:true,navigator_view:None,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,camera:Default::default(),rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -1010,6 +1012,7 @@ impl A4Studio {
         self.capacity_cache = None;
         self.zoom = 1.;
         self.canvas_pan = egui::Vec2::ZERO;
+        self.camera = Default::default();
         self.status = format!("Page size: {}", self.unit.size(width, height));
         Ok(())
     }
@@ -1250,6 +1253,7 @@ impl A4Studio {
             self.ratio = 1.;
             self.zoom = 1.;
             self.canvas_pan = egui::Vec2::ZERO;
+            self.camera = Default::default();
             self.show_new = false;
             self.status = format!(
                 "New document: {} / {:.1} x {:.1} mm. Import an image to begin.",
@@ -2453,6 +2457,20 @@ impl A4Studio {
             }
         }
     }
+    fn handle_dropped_artwork(&mut self, ctx: &egui::Context) {
+        if let Some(p) = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone())) {
+            if p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("mc630"))
+            {
+                self.request_action(DocumentAction::OpenProject(p), ctx);
+            } else if self.source.is_empty() {
+                self.request_action(DocumentAction::OpenImage(p), ctx);
+            } else {
+                self.add_image(&p, ctx);
+            }
+        }
+    }
+
     fn choose_image(&mut self, ctx: &egui::Context) {
         if !self.source.is_empty() {
             self.choose_add_image(ctx);
@@ -2667,12 +2685,12 @@ impl A4Studio {
         egui::TopBottomPanel::top("document-menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open project...   Ctrl+Shift+O").clicked() {
+                    if ui.add(egui::Button::new("Open project...").shortcut_text("Ctrl+Shift+O")).clicked() {
                         ui.close_menu();
                         self.choose_project(ctx);
                     }
                     self.recent_projects_menu(ui, ctx);
-                    if ui.button("Save   Ctrl+S").clicked() {
+                    if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() {
                         ui.close_menu();
                         self.save_project(false);
                     }
@@ -2684,7 +2702,7 @@ impl A4Studio {
                         self.workspace_action = Some(WorkspaceAction::SaveAll);
                         ui.close_menu();
                     }
-                    if ui.button("Close project   Ctrl+W").clicked() {
+                    if ui.add(egui::Button::new("Close project").shortcut_text("Ctrl+W")).clicked() {
                         self.request_tab_close(ctx);
                         ui.close_menu();
                     }
@@ -2696,7 +2714,7 @@ impl A4Studio {
                         self.workspace_action = Some(WorkspaceAction::CloseAll);
                         ui.close_menu();
                     }
-                    if ui.button("Save As...   Ctrl+Shift+S").clicked() {
+                    if ui.add(egui::Button::new("Save As...").shortcut_text("Ctrl+Shift+S")).clicked() {
                         ui.close_menu();
                         self.save_project(true);
                     }
@@ -2706,13 +2724,13 @@ impl A4Studio {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("New document...   Ctrl+N").clicked() {
+                    if ui.add(egui::Button::new("New document...").shortcut_text("Ctrl+N")).clicked() {
                         self.request_action(DocumentAction::New, ctx);
                         ui.close_menu();
                     }
                     ui.separator();
 
-                    if ui.button("Import image...   Ctrl+O").clicked() {
+                    if ui.add(egui::Button::new("Import image...").shortcut_text("Ctrl+O")).clicked() {
                         ui.close_menu();
                         self.choose_image(ctx);
                     }
@@ -2740,20 +2758,20 @@ impl A4Studio {
                         ui.close_menu();
                         self.export_pair(frame);
                     }
-                    if ui.button("Print...   Ctrl+P").clicked() {
+                    if ui.add(egui::Button::new("Print...").shortcut_text("Ctrl+P")).clicked() {
                         self.show_print_dialog = true;
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.button("Paste image   Ctrl+V").clicked() {
+                    if ui.add(egui::Button::new("Paste image").shortcut_text("Ctrl+V")).clicked() {
                         ui.close_menu();
                         self.paste_image(ctx);
                     }
                     if ui
                         .add_enabled(
                             self.art.is_some(),
-                            egui::Button::new("Select all images   Ctrl+A"),
+                            egui::Button::new("Select all images").shortcut_text("Ctrl+A"),
                         )
                         .clicked()
                     {
@@ -2763,7 +2781,7 @@ impl A4Studio {
                     if ui
                         .add_enabled(
                             !self.selection.is_empty(),
-                            egui::Button::new("Repeat duplicate   Ctrl+R"),
+                            egui::Button::new("Repeat duplicate").shortcut_text("Ctrl+R"),
                         )
                         .clicked()
                     {
@@ -2773,7 +2791,7 @@ impl A4Studio {
                     if ui
                         .add_enabled(
                             !self.selection.is_empty(),
-                            egui::Button::new("Delete selected images   Del"),
+                            egui::Button::new("Delete selected images").shortcut_text("Del"),
                         )
                         .clicked()
                     {
@@ -2784,7 +2802,7 @@ impl A4Studio {
                     if ui
                         .add_enabled(
                             !self.undo.is_empty(),
-                            egui::Button::new("Undo object edit   Ctrl+Z"),
+                            egui::Button::new("Undo object edit").shortcut_text("Ctrl+Z"),
                         )
                         .clicked()
                     {
@@ -2794,14 +2812,14 @@ impl A4Studio {
                     if ui
                         .add_enabled(
                             !self.redo.is_empty(),
-                            egui::Button::new("Redo object edit   Ctrl+Y"),
+                            egui::Button::new("Redo object edit").shortcut_text("Ctrl+Y"),
                         )
                         .clicked()
                     {
                         self.redo_object(ctx);
                         ui.close_menu();
                     }
-                    if ui.button("Deselect   Esc").clicked() {
+                    if ui.add(egui::Button::new("Deselect").shortcut_text("Esc")).clicked() {
                         self.clear_selection();
                         ui.close_menu();
                     }
@@ -2822,7 +2840,7 @@ impl A4Studio {
                         ui.close_menu();
                     }
                     ui.checkbox(&mut self.show_margin_guides, "Margin guides");
-                    ui.checkbox(&mut self.show_properties, "Properties sidebar");
+                    ui.checkbox(&mut self.show_properties, "Right dock");
                     ui.menu_button("Contour colour", |ui| {
                         ui.horizontal_wrapped(|ui| {
                             for color in [
@@ -2855,8 +2873,7 @@ impl A4Studio {
                     );
                     ui.checkbox(&mut self.show_cut, "Cut outlines");
                     if ui.button("Fit page").clicked() {
-                        self.zoom = 1.;
-                        self.canvas_pan = egui::Vec2::ZERO;
+                        self.camera.fit(ctx);
                         ui.close_menu();
                     }
                 });
@@ -2892,7 +2909,7 @@ impl A4Studio {
                         ui.close_menu();
                     }
                     if ui.button("Page properties").clicked() {
-                        self.show_properties = true;
+                        self.open_sidebar_section(1);
                         ui.close_menu();
                     }
                 });
@@ -2900,7 +2917,7 @@ impl A4Studio {
                     ui.checkbox(&mut self.ccd_trial, "CCD four-dot registration");
                     ui.checkbox(&mut self.layout.cut_inner_holes, "Cut inner holes");
                     if ui.button("Contour properties").clicked() {
-                        self.show_properties = true;
+                        self.open_sidebar_section(2);
                         ui.close_menu();
                     }
                 });
@@ -2954,6 +2971,7 @@ impl A4Studio {
                         .enumerate()
                 {
                     let visible = self.show_properties
+                        && !self.show_navigator
                         && !self.show_print_dialog
                         && self
                             .section_palettes
@@ -2965,6 +2983,8 @@ impl A4Studio {
                         self.open_sidebar_section(index);
                     }
                 }
+                ui.checkbox(&mut self.snap_guides, "Snap")
+                    .on_hover_text("Snap to guides and margins");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new("MC630  |  Print & Cut").small());
                 });
@@ -3093,7 +3113,7 @@ impl A4Studio {
                 && !self.show_settings
                 && !self.selection.is_empty()
                 && self.drag.is_none()
-                && !self.panning
+                && !self.camera.is_panning()
             {
                 let delta = ctx.input_mut(|i| {
                     let mods = i.modifiers;
@@ -3153,17 +3173,7 @@ impl A4Studio {
             }
         }
 
-        if let Some(p) = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone())) {
-            if p.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("mc630"))
-            {
-                self.request_action(DocumentAction::OpenProject(p), ctx);
-            } else if self.source.is_empty() {
-                self.request_action(DocumentAction::OpenImage(p), ctx);
-            } else {
-                self.add_image(&p, ctx);
-            }
-        }
+        self.handle_dropped_artwork(ctx);
 
         egui::TopBottomPanel::bottom("a4-status").show(ctx, |ui| {
             ui.add_space(1.);
@@ -3230,15 +3240,14 @@ impl A4Studio {
                 );
                 ui.separator();
                 if ui.small_button("-").on_hover_text("Zoom out").clicked() {
-                    self.zoom = (self.zoom - 0.25).max(0.5);
+                    self.camera.zoom_to(ctx, self.camera.target_zoom(self.zoom) / 1.25);
                 }
                 ui.label(format!("{:.0}%", self.zoom * 100.)).on_hover_text("Ctrl + mouse wheel: zoom at pointer. Space + left drag: pan. Fit page resets the view.");
                 if ui.small_button("+").on_hover_text("Zoom in").clicked() {
-                    self.zoom = (self.zoom + 0.25).min(16.);
+                    self.camera.zoom_to(ctx, self.camera.target_zoom(self.zoom) * 1.25);
                 }
                 if icon_button(ui, Icon::Fit, "Fit page") {
-                    self.zoom = 1.;
-                    self.canvas_pan = egui::Vec2::ZERO;
+                    self.camera.fit(ctx);
                 }
             });
         });
@@ -3253,67 +3262,43 @@ impl A4Studio {
             });
         }
         egui::SidePanel::left("toolbox")
-            .exact_width(82.)
+            .exact_width(48.)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.small("Tools");
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if icon_toggle(ui, Icon::Import, false, "Import image") {
+                ui.vertical_centered(|ui| {
+                    if icon_toggle(ui, Icon::Select, self.pick_cut_shapes, "Select images and cut shapes") {
+                        self.activate_cut_picker();
+                    }
+                    let active = self.cut_draft.as_ref().map(|draft| draft.tool);
+                    for (tool, icon, name) in [
+                        (Tool::Pen, Icon::Pen, "Pen cut tool"),
+                        (Tool::Ellipse, Icon::Ellipse, "Circle / ellipse cut tool"),
+                        (Tool::Rectangle, Icon::Rectangle, "Rectangle cut tool"),
+                    ] {
+                        if icon_toggle(ui, icon, active == Some(tool), name) {
+                            self.activate_cut_tool(tool);
+                        }
+                    }
+                    ui.separator();
+                    if icon_button(ui, Icon::Import, "Import image") {
                         self.choose_image(ctx);
                     }
-                    if icon_toggle(ui, Icon::Settings, self.show_properties, "Properties sidebar") {
-                        self.show_properties = true;
+                    if icon_toggle(ui, Icon::Settings, self.show_properties, "Show / hide right dock") {
+                        self.show_properties = !self.show_properties;
                     }
-                });
-                ui.horizontal(|ui| {
                     if icon_toggle(ui, Icon::Print, self.show_print_dialog, "Print (Ctrl+P)") {
                         self.show_print_dialog = true;
                     }
                     if icon_toggle(ui, Icon::Outline, self.show_cut, "Show / hide cut outlines") {
                         self.show_cut = !self.show_cut;
                     }
-                });
-                ui.horizontal(|ui| {
-                    if icon_toggle(ui, Icon::Grid, self.grid, "Show / hide grid") {
+                    if icon_toggle(ui, Icon::Grid, self.grid, "Show / hide page grid") {
                         self.grid = !self.grid;
                     }
-                    if icon_toggle(ui, Icon::Fit, false, "Fit page") {
-                        self.zoom = 1.;
-                        self.canvas_pan = egui::Vec2::ZERO;
+                    if icon_button(ui, Icon::Fit, "Fit page (Ctrl + wheel to zoom)") {
+                        self.camera.fit(ctx);
                     }
                 });
-                ui.separator();
-                ui.small("Cut");
-                let active = self.cut_draft.as_ref().map(|draft| draft.tool);
-                {
-                    ui.horizontal(|ui| {
-                        if icon_toggle(ui, Icon::Pen, active == Some(Tool::Pen), "Pen cut tool") {
-                            self.activate_cut_tool(Tool::Pen);
-                        }
-                        if icon_toggle(ui, Icon::Ellipse,
-                            active == Some(Tool::Ellipse),
-                            "Circle / Ellipse cut tool",
-                        ) {
-                            self.activate_cut_tool(Tool::Ellipse);
-                        }
-                    });
-                    if icon_toggle(ui, Icon::Rectangle,
-                        active == Some(Tool::Rectangle),
-                        "Rectangle / Rounded rectangle cut tool",
-                    ) {
-                        self.activate_cut_tool(Tool::Rectangle);
-                    }
-                    if icon_toggle(ui, Icon::Select, self.pick_cut_shapes, "Select images and cut shapes")
-                    {
-                        self.activate_cut_picker();
-                    }
-                }
-                ui.separator();
-                ui.small("Space + drag")
-                    .on_hover_text("Hold Space and drag to pan the page");
-                ui.small("Ctrl + wheel")
-                    .on_hover_text("Hold Ctrl and use the mouse wheel to zoom");
             });
         self.properties_sidebar(ctx);
         egui::CentralPanel::default()
@@ -3325,85 +3310,36 @@ impl A4Studio {
                 }
                 let viewport = ui.available_size();
                 let viewport_rect = egui::Rect::from_min_size(ui.cursor().min, viewport);
-                let space =
-                    ctx.input(|i| i.key_down(egui::Key::Space)) && !ctx.wants_keyboard_input();
-                let pointer_over = ui.rect_contains_pointer(viewport_rect);
-                let wheel = if pointer_over {
-                    ctx.input_mut(|i| {
-                        if i.modifiers.ctrl {
-                            let delta = i.raw_scroll_delta.y;
-                            i.raw_scroll_delta = egui::Vec2::ZERO;
-                            i.smooth_scroll_delta = egui::Vec2::ZERO;
-                            delta
-                        } else {
-                            0.
-                        }
-                    })
-                } else {
-                    0.
-                };
-                let old_zoom = self.zoom;
-                if wheel != 0. {
-                    self.zoom = (self.zoom * (wheel * 0.003).exp()).clamp(0.5, 16.);
-                }
-                if space
-                    && pointer_over
-                    && ctx.input(|i| i.pointer.primary_pressed())
-                    && self.drag.is_none()
-                {
-                    self.panning = true;
-                }
-                let pan_gesture = self.panning || (space && pointer_over);
-                if self.panning {
-                    self.canvas_pan += ctx.input(|i| i.pointer.delta());
-                    if !ctx.input(|i| i.pointer.primary_down()) {
-                        self.panning = false;
-                    }
-                }
-                if pan_gesture {
-                    ctx.set_cursor_icon(if self.panning {
-                        egui::CursorIcon::Grabbing
-                    } else {
-                        egui::CursorIcon::Grab
-                    });
-                }
-                let canvas = egui::ScrollArea::both()
-                    .drag_to_scroll(false)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let canvas_size = viewport * self.zoom.max(1.);
+                let origin_offset = egui::vec2(14., 12.);
+                let pan_gesture = self.camera.update(
+                    ui,
+                    viewport_rect,
+                    origin_offset,
+                    &mut self.zoom,
+                    &mut self.canvas_pan,
+                    self.drag.is_none() && self.guide_drag.is_none() && self.cut_shape_drag.is_none(),
+                );
+                let canvas = ui.scope(|ui| {
                         let (area, canvas_response) =
-                            ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
+                            ui.allocate_exact_size(viewport, egui::Sense::click_and_drag());
                         let painter = ui.painter_at(area);
 
-                        painter.rect_filled(area, 0., crate::ui_theme::CANVAS);
+                        crate::ui_theme::paint_workspace(&painter, area);
 
                         let scale = ((viewport.x - 90.) / self.layout.page_width as f32)
                             .min((viewport.y - 80.) / self.layout.page_height as f32)
                             .max(0.01)
                             * self.zoom;
-                        if self.zoom != old_zoom {
-                            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                                let old_center = area.min
-                                    + viewport * old_zoom.max(1.) * 0.5
-                                    + egui::vec2(14., 12.)
-                                    + self.canvas_pan;
-                                let new_center =
-                                    area.center() + egui::vec2(14., 12.) + self.canvas_pan;
-                                self.canvas_pan += pointer
-                                    + (old_center - pointer) * (self.zoom / old_zoom)
-                                    - new_center;
-                            }
-                        }
                         let page = egui::Rect::from_center_size(
-                            area.center() + egui::vec2(14., 12.) + self.canvas_pan,
+                            crate::canvas_camera::CanvasCamera::origin(area, self.zoom, origin_offset) + self.canvas_pan,
                             egui::vec2(
                                 self.layout.page_width as f32 * scale,
                                 self.layout.page_height as f32 * scale,
                             ),
                         );
+                        self.navigator_view = Some((page, viewport_rect));
                         painter.rect_filled(
-                            page.translate(egui::vec2(4., 6.)),
+                            page.translate(egui::vec2(2., 3.)),
                             2.,
                             egui::Color32::from_gray(180),
                         );
@@ -4767,6 +4703,7 @@ mod selection_tests {
     }
 }
 
+include!("workspace_ui.rs");
 include!("settings_ui.rs");
 
 include!("project_ui.rs");
@@ -4803,52 +4740,68 @@ impl A4Studio {
             return;
         }
         egui::SidePanel::right("properties-sidebar")
-            .default_width(330.)
-            .width_range(300. ..=480.)
+            .default_width(300.)
+            .width_range(265. ..=450.)
             .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Properties");
+                    ui.selectable_value(&mut self.show_navigator, true, "Navigator");
+                    ui.selectable_value(&mut self.show_navigator, false, "Properties");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("×").on_hover_text("Hide sidebar").clicked() {
+                        if crate::ui_theme::close_icon(ui).on_hover_text("Hide right dock").clicked() {
                             self.show_properties = false;
                         }
                     });
                 });
-                let active = self
-                    .section_palettes
-                    .iter()
-                    .position(|section| section.visible)
-                    .unwrap_or(0);
-                ui.horizontal_wrapped(|ui| {
-                    for (index, (icon, label)) in
-                        [(Icon::Artwork, "Artwork"), (Icon::Settings, "Size and Repeat"), (Icon::Outline, "Cut Outline")]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        if icon_toggle(ui, icon, index == active, label) {
-                            self.open_sidebar_section(index);
-                        }
-                    }
-                });
                 ui.separator();
-                let properties_height = (ui.available_height() * 0.62).max(0.);
-                egui::ScrollArea::vertical()
-                    .id_salt(("properties-scroll", active))
-                    .max_height(properties_height)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        match self
-                            .section_palettes
-                            .iter()
-                            .position(|section| section.visible)
-                            .unwrap_or(0)
-                        {
+                if self.show_navigator {
+                    self.navigator(ui);
+                    ui.separator();
+                    ui.strong("Cut line color");
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, color) in crate::ui_theme::CUT_COLORS {
+                            let selected = self.contour_color == color;
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(21., 21.), egui::Sense::click());
+                            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
+                            ui.painter().rect(
+                                rect,
+                                3.,
+                                color,
+                                egui::Stroke::new(1_f32, egui::Color32::from_gray(160)),
+                                egui::StrokeKind::Inside,
+                            );
+                            if selected || response.has_focus() {
+                                ui.painter().rect_stroke(rect.shrink(2.), 2., egui::Stroke::new(1.5_f32, egui::Color32::WHITE), egui::StrokeKind::Inside);
+                            }
+                            if response.on_hover_text(format!("{name} cut line")).clicked() {
+                                self.contour_color = color;
+                            }
+                        }
+                    });
+                } else {
+                    let active = self.section_palettes.iter().position(|section| section.visible).unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        for (index, (icon, label)) in [
+                            (Icon::Artwork, "Artwork"),
+                            (Icon::Settings, "Size and Repeat"),
+                            (Icon::Outline, "Cut Outline"),
+                        ].into_iter().enumerate() {
+                            if icon_toggle(ui, icon, index == active, label) {
+                                self.open_sidebar_section(index);
+                            }
+                        }
+                    });
+                    let height = (ui.available_height() * 0.64).max(0.);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("properties-scroll", active))
+                        .max_height(height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match active {
                             0 => self.artwork_dialog_content(ui, ctx),
                             1 => self.repeat_dialog_content(ui),
                             _ => self.outline_dialog_content(ui),
-                        }
-                    });
+                        });
+                }
                 ui.separator();
                 self.layers_sidebar(ui);
             });
@@ -5024,6 +4977,7 @@ impl A4Studio {
 
     fn open_sidebar_section(&mut self, index: usize) {
         self.show_properties = true;
+        self.show_navigator = false;
         for (i, section) in self.section_palettes.iter_mut().enumerate() {
             section.visible = i == index;
         }

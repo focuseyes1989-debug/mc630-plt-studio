@@ -93,7 +93,10 @@ impl Store {
                         .iter()
                         .all(|section| section.geometry.is_none_or(Geometry::valid))
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| State {
+                visible: !path.exists(),
+                ..State::default()
+            });
         Self {
             path: Some(path),
             state,

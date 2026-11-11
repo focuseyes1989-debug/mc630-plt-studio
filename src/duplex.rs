@@ -353,6 +353,9 @@ pub struct BackEditor {
     selected: Option<usize>,
     textures: Vec<egui::TextureHandle>,
     drag_start: Option<(BackImage, Option<usize>)>,
+    camera: crate::canvas_camera::CanvasCamera,
+    view_zoom: Option<f32>,
+    view_pan: egui::Vec2,
     copied: Option<BackImage>,
     contour: usize,
     keep_ratio: bool,
@@ -549,6 +552,24 @@ impl BackEditor {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Back artwork");
+                    ui.horizontal(|ui| {
+                        let zoom = self.view_zoom.unwrap_or(1.);
+                        let target = self.camera.target_zoom(zoom);
+                        if ui.small_button("−").on_hover_text("Zoom out").clicked() {
+                            self.camera.zoom_to(ctx, target / 1.25);
+                        }
+                        ui.label(format!("{:.0}%", zoom * 100.));
+                        if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+                            self.camera.zoom_to(ctx, target * 1.25);
+                        }
+                        if icon_button(
+                            ui,
+                            Icon::Fit,
+                            "Fit page (Ctrl + wheel to zoom, Space + drag to pan)",
+                        ) {
+                            self.camera.fit(ctx);
+                        }
+                    });
                     let old = self.data.flip;
                     ui.horizontal(|ui| {
                         ui.label("Turn paper");
@@ -763,14 +784,28 @@ impl BackEditor {
         let [start, end] = margins[flip_axis];
         margins[flip_axis] = [page[flip_axis] - end, page[flip_axis] - start];
         egui::CentralPanel::default().show(ctx, |ui| {
-            let available = ui.available_size() - egui::vec2(40., 40.);
+            let viewport = ui.available_size();
+            let (canvas, _) = ui.allocate_exact_size(viewport, egui::Sense::hover());
+            let zoom = self.view_zoom.get_or_insert(1.);
+            let pan_gesture = self.camera.update(
+                ui,
+                canvas,
+                egui::Vec2::ZERO,
+                zoom,
+                &mut self.view_pan,
+                self.drag_start.is_none(),
+            );
+            let available = viewport - egui::vec2(40., 40.);
             let scale = (available.x / page[0] as f32)
                 .min(available.y / page[1] as f32)
-                .max(0.01);
-            let (canvas, _) =
-                ui.allocate_exact_size(available + egui::vec2(40., 40.), egui::Sense::hover());
+                .max(0.01)
+                * *zoom;
+            crate::ui_theme::paint_workspace(ui.painter(), canvas);
             let size = egui::vec2(page[0] as f32 * scale, page[1] as f32 * scale);
-            let paper = egui::Rect::from_center_size(canvas.center(), size);
+            let center =
+                crate::canvas_camera::CanvasCamera::origin(canvas, *zoom, egui::Vec2::ZERO)
+                    + self.view_pan;
+            let paper = egui::Rect::from_center_size(center, size);
             ui.painter().rect_filled(paper, 0., egui::Color32::WHITE);
             let point =
                 |p: [f64; 2]| paper.min + egui::vec2(p[0] as f32 * scale, p[1] as f32 * scale);
@@ -824,7 +859,7 @@ impl BackEditor {
                     ]);
                     uv.iter().all(|v| (0. ..=1.).contains(v))
                 });
-                if over || self.selected == Some(i) {
+                if !pan_gesture && (over || self.selected == Some(i)) {
                     let response = ui.interact(
                         rect,
                         ui.id().with(("back-image", i)),
@@ -852,15 +887,17 @@ impl BackEditor {
                             egui::Stroke::new(1_f32, egui::Color32::BLUE),
                             egui::StrokeKind::Inside,
                         );
-                        let response = ui
-                            .interact(
-                                handle.expand(3.),
-                                ui.id().with(("back-resize", i, corner)),
-                                egui::Sense::drag(),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
-                        if response.drag_started() {
-                            begin = Some((i, Some(corner)));
+                        if !pan_gesture {
+                            let response = ui
+                                .interact(
+                                    handle.expand(3.),
+                                    ui.id().with(("back-resize", i, corner)),
+                                    egui::Sense::drag(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
+                            if response.drag_started() {
+                                begin = Some((i, Some(corner)));
+                            }
                         }
                     }
                 }
