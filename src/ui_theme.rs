@@ -3,6 +3,15 @@ use eframe::egui;
 pub const BUTTON_RADIUS: egui::CornerRadius = egui::CornerRadius::same(5);
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(21, 116, 196);
 pub const CANVAS: egui::Color32 = egui::Color32::from_rgb(220, 220, 224);
+pub const TAB_STRIP: egui::Color32 = egui::Color32::from_rgb(232, 232, 235);
+
+pub fn underline_tab(ui: &egui::Ui, rect: egui::Rect) {
+    let y = rect.bottom() - 1.;
+    ui.painter().line_segment(
+        [egui::pos2(rect.left() + 4., y), egui::pos2(rect.right() - 4., y)],
+        egui::Stroke::new(2_f32, ui.visuals().text_color()),
+    );
+}
 
 pub fn close_icon(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click());
@@ -120,6 +129,8 @@ pub enum Icon {
     Paste,
     RotateLeft,
     RotateRight,
+    FlipHorizontal,
+    FlipVertical,
     Refresh,
     Swap,
     Check,
@@ -158,6 +169,22 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
             egui::StrokeKind::Inside,
         );
     }
+    paint_icon(ui, r, kind);
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint)
+        .clicked()
+}
+
+pub fn tool_indicator(ui: &mut egui::Ui, kind: Icon, label: &str) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32., 32.), egui::Sense::hover());
+    paint_icon(ui, rect, kind);
+    response.labelled_by(ui.label(label).id);
+}
+
+fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
+    let painter = ui.painter();
     let ink = egui::Stroke::new(
         1.4_f32,
         if ui.is_enabled() {
@@ -380,6 +407,22 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
                 line((16., 16.), (16., 20.));
             }
         }
+        Icon::FlipHorizontal | Icon::FlipVertical => {
+            let transform = |(x, y)| {
+                if kind == Icon::FlipVertical { (y, x) } else { (x, y) }
+            };
+            for (a, b) in [
+                ((16., 6.), (16., 26.)),
+                ((7., 10.), (7., 22.)),
+                ((7., 10.), (13., 16.)),
+                ((7., 22.), (13., 16.)),
+                ((25., 10.), (25., 22.)),
+                ((25., 10.), (19., 16.)),
+                ((25., 22.), (19., 16.)),
+            ] {
+                line(transform(a), transform(b));
+            }
+        }
         Icon::Swap => {
             line((7., 11.), (25., 11.));
             line((25., 11.), (21., 7.));
@@ -442,11 +485,6 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
             }
         }
     }
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(hint)
-        .on_disabled_hover_text(hint)
-        .clicked()
 }
 
 pub const CUT_COLORS: [(&str, egui::Color32); 7] = [

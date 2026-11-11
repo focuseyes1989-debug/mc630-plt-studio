@@ -60,12 +60,8 @@ pub fn append_image(
     path: &std::path::Path,
     inset: f64,
 ) -> Result<(Vec<u8>, mc630_plt_studio::sheet::Layout), String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(30_000_001).read_to_end(&mut bytes))
-        .map_err(|e| e.to_string())?;
-    append_image_bytes(layout, source, &bytes, inset)
+    let image = crate::image_import::read_file(path)?;
+    append_image_bytes(layout, source, &image.bytes, inset)
 }
 
 pub fn append_image_bytes(
@@ -116,6 +112,7 @@ pub fn append_image_bytes(
                     y,
                     width,
                     height,
+                    orientation: Default::default(),
                 });
                 break 'search;
             }
@@ -171,7 +168,7 @@ pub fn image_group(
     available: [f64; 2],
 ) -> Result<ImageGroup, String> {
     use image::{ImageFormat, RgbaImage, imageops};
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
 
     const GAP: f64 = 5.;
     const PIXELS_PER_MM: f64 = 300. / 25.4;
@@ -182,13 +179,7 @@ pub fn image_group(
     let mut decoded_bytes = 0;
     for path in paths {
         let result = (|| -> Result<_, String> {
-            let mut bytes = Vec::new();
-            std::fs::File::open(path)
-                .and_then(|file| file.take(30_000_001).read_to_end(&mut bytes))
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 30_000_000 {
-                return Err("Image exceeds 30 MB.".into());
-            }
+            let bytes = crate::image_import::read_file(path)?.bytes;
             let [dx, dy] = dpi(&bytes).unwrap_or([300.; 2]);
             let pixels = decode_rgba(&bytes)?;
             decoded_bytes += pixels.as_raw().len();
@@ -262,6 +253,7 @@ pub fn image_group(
                 y,
                 width: w,
                 height: h,
+                orientation: Default::default(),
             });
             x += w + GAP;
             row_height = row_height.max(h);

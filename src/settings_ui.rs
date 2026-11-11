@@ -9,6 +9,7 @@ impl A4Studio {
         let mut layout = self.layout.clone();
         layout.custom.clear();
         layout.hidden_images.clear();
+        layout.image_groups.clear();
         layout.guides = Default::default();
         layout.manual_cut_paths.clear();
         layout.use_manual_cut_paths = false;
@@ -47,6 +48,7 @@ impl A4Studio {
         self.unit = p.unit;
         self.layout = p.layout;
         self.layout.custom.clear();
+        self.layout.image_groups.clear();
         self.ccd_trial = p.ccd;
         self.ccd_profile = p.profile;
         self.cut_shape = p.cut_shape;

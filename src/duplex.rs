@@ -518,22 +518,11 @@ impl BackEditor {
     }
     pub fn import(&mut self, page: [f64; 2], paths: &[Vec<[f64; 2]>]) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Back image", &["png", "jpg", "jpeg"])
+            .add_filter("Back image", crate::image_import::EXTENSIONS)
             .pick_file()
         {
-            let result = std::fs::read(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| {
-                    self.add_image_bytes(
-                        bytes,
-                        path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
-                        page,
-                        paths,
-                    )
-                });
+            let result = crate::image_import::read_file(&path)
+                .and_then(|image| self.add_image_bytes(image.bytes, image.name, page, paths));
             self.message = result.err().unwrap_or_default();
         }
     }

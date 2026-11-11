@@ -86,7 +86,7 @@ impl A4Studio {
                                 egui::Button::new("Drop an image here or click to import")
                                     .fill(egui::Color32::from_rgb(226, 226, 229)),
                             )
-                            .on_hover_text("Import PNG or JPEG (Ctrl+O)")
+                            .on_hover_text("Import image (Ctrl+O)")
                             .clicked()
                         {
                             self.choose_image(ctx);
@@ -133,10 +133,12 @@ impl A4Studio {
                     page.min + egui::vec2(item.x as f32, item.y as f32) * scale,
                     egui::vec2(item.width as f32, item.height as f32) * scale,
                 );
-                painter.image(
+                paint_oriented_image(
+                    &painter,
                     texture.id(),
                     rect,
                     self.image_uv(index, art),
+                    item.orientation,
                     egui::Color32::WHITE,
                 );
             }

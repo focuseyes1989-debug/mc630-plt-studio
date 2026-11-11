@@ -200,6 +200,130 @@ impl CcdTrial {
         Ok((html, plt))
     }
 }
+fn group_cut_outline(mut paths: Vec<Vec<Point>>) -> Result<Vec<Point>, String> {
+    use geo::orient::{Direction, Orient};
+    use geo::{LineString, Polygon, algorithm::bool_ops::unary_union};
+
+    if paths.len() == 1 {
+        return Ok(paths.remove(0));
+    }
+    let polygons: Vec<_> = paths
+        .into_iter()
+        .filter(|path| path.len() >= 4)
+        .map(|path| {
+            Polygon::new(
+                LineString::from_iter(path.into_iter().map(|[x, y]| (x, y))),
+                vec![],
+            )
+            .orient(Direction::Default)
+        })
+        .collect();
+    if polygons.is_empty() {
+        return Err("No outer contour found for the image group.".into());
+    }
+    let mut components = unary_union(&polygons).0;
+    let polygon = if components.len() > 1 {
+        bridge_cut_components(components)?
+    } else {
+        components
+            .pop()
+            .ok_or("No outer contour found for the image group.")?
+    };
+    Ok(polygon
+        .exterior()
+        .points()
+        .map(|p| [p.x(), p.y()])
+        .collect())
+}
+
+fn bridge_cut_components(
+    mut components: Vec<geo::Polygon<f64>>,
+) -> Result<geo::Polygon<f64>, String> {
+    use geo::orient::{Direction, Orient};
+    use geo::{
+        BoundingRect, Buffer, LineString, Point as GeoPoint, algorithm::bool_ops::unary_union,
+    };
+    use rstar::{RTree, primitives::Line};
+
+    // A 1 mm bridge joins outlines only where they meet the shortest gap.
+    const RADIUS: f64 = 0.5;
+    let count = components.len();
+    let bounds: Vec<_> = components
+        .iter()
+        .map(|polygon| {
+            polygon
+                .bounding_rect()
+                .expect("union components have an exterior")
+        })
+        .collect();
+    let boundaries: Vec<_> = components
+        .iter()
+        .map(|polygon| {
+            RTree::bulk_load(
+                polygon
+                    .exterior()
+                    .lines()
+                    .map(|edge| Line::new([edge.start.x, edge.start.y], [edge.end.x, edge.end.y]))
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut joined = vec![false; count];
+    let mut nearest = vec![(f64::INFINITY, [[0.; 2]; 2]); count];
+    let mut current = 0;
+
+    // Grow a minimum spanning tree so a group with several gaps only gets the
+    // bridges it needs. The closest points of disjoint segments include a vertex.
+    for _ in 1..count {
+        joined[current] = true;
+        for candidate in 0..count {
+            if joined[candidate] {
+                continue;
+            }
+            let a = bounds[current];
+            let b = bounds[candidate];
+            let dx = (a.min().x - b.max().x).max(b.min().x - a.max().x).max(0.);
+            let dy = (a.min().y - b.max().y).max(b.min().y - a.max().y).max(0.);
+            if dx * dx + dy * dy >= nearest[candidate].0 {
+                continue;
+            }
+            for (from, to) in [(current, candidate), (candidate, current)] {
+                for vertex in &components[from].exterior().0 {
+                    let vertex = [vertex.x, vertex.y];
+                    if let Some(edge) = boundaries[to].nearest_neighbor(&vertex) {
+                        let other = edge.nearest_point(&vertex);
+                        let gap = (vertex[0] - other[0]).powi(2) + (vertex[1] - other[1]).powi(2);
+                        if gap < nearest[candidate].0 {
+                            nearest[candidate] = (gap, [vertex, other]);
+                        }
+                    }
+                }
+            }
+        }
+        current = (0..count)
+            .filter(|&i| !joined[i])
+            .min_by(|&a, &b| nearest[a].0.total_cmp(&nearest[b].0))
+            .ok_or("Cannot connect the grouped cut outlines.")?;
+        let (gap, [a, b]) = nearest[current];
+        if !gap.is_finite() {
+            return Err("Cannot connect the grouped cut outlines.".into());
+        }
+        let bridge = if gap < 1e-12 {
+            GeoPoint::new(a[0], a[1]).buffer(RADIUS)
+        } else {
+            LineString::from(vec![(a[0], a[1]), (b[0], b[1])]).buffer(RADIUS)
+        };
+        components.extend(bridge.0.into_iter().map(|p| p.orient(Direction::Default)));
+    }
+    let mut merged = unary_union(&components);
+    if merged.0.len() != 1 {
+        return Err(
+            "Cannot connect the grouped cut outlines. Move the images closer together.".into(),
+        );
+    }
+    Ok(merged.0.remove(0))
+}
+
 fn write_plt_path(out: &mut String, path: &[Point], units: f64, transpose: bool) {
     let mut previous = None;
     for &[x, y] in path {
@@ -253,15 +377,7 @@ pub fn artwork_with_shape(
     tolerance: u8,
     print_without_background: bool,
 ) -> Result<Artwork, String> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8000);
-    limits.max_image_height = Some(8000);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let decoded = reader.decode().map_err(|e| e.to_string())?;
+    let decoded = decode_image(bytes)?;
     trace_artwork(
         decoded.into_rgba8(),
         remove_white,
@@ -270,6 +386,18 @@ pub fn artwork_with_shape(
         tolerance,
         print_without_background,
     )
+}
+
+pub fn decode_image(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8000);
+    limits.max_image_height = Some(8000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().map_err(|e| e.to_string())
 }
 
 fn trace_artwork(
@@ -756,6 +884,139 @@ fn simplify(p: &[Point], tol: f64, out: &mut Vec<Point>) {
     }
     out.push(b);
 }
+/// Clockwise rotation followed by reflections along the page axes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Orientation {
+    turns: u8,
+    flip_x: bool,
+    flip_y: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    free_rotation: Option<FreeRotation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FreeRotation {
+    degrees: f64,
+    source_aspect: f64,
+}
+
+impl Orientation {
+    pub fn degrees(self) -> f64 {
+        self.free_rotation
+            .map_or(f64::from(self.turns % 4) * 90., |r| r.degrees)
+    }
+
+    fn rotation_components(degrees: f64) -> (f64, f64) {
+        match degrees {
+            0. => (0., 1.),
+            90. => (1., 0.),
+            180. => (0., -1.),
+            270. => (-1., 0.),
+            _ => degrees.to_radians().sin_cos(),
+        }
+    }
+
+    fn bounding_size(degrees: f64, width: f64, height: f64) -> (f64, f64) {
+        let (sin, cos) = Self::rotation_components(degrees);
+        (
+            cos.abs() * width + sin.abs() * height,
+            sin.abs() * width + cos.abs() * height,
+        )
+    }
+
+    pub fn flip(&mut self, horizontal: bool) {
+        if horizontal {
+            self.flip_x = !self.flip_x;
+        } else {
+            self.flip_y = !self.flip_y;
+        }
+    }
+
+    fn source_size(self, width: f64, height: f64) -> (f64, f64) {
+        if let Some(rotation) = self.free_rotation {
+            let (w, h) = Self::bounding_size(rotation.degrees, rotation.source_aspect, 1.);
+            let scale = ((width / w) * (height / h)).sqrt();
+            return (rotation.source_aspect * scale, scale);
+        }
+        if self.turns % 2 == 1 {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
+
+    fn valid(self) -> bool {
+        self.free_rotation.is_none_or(|r| {
+            (0. ..360.).contains(&r.degrees) && r.source_aspect.is_finite() && r.source_aspect > 0.
+        })
+    }
+
+    /// Map source coordinates in millimetres into the image's page-aligned frame.
+    fn point(self, [x, y]: Point, width: f64, height: f64) -> Point {
+        let (w, h) = self.source_size(width, height);
+        let (sin, cos) = Self::rotation_components(self.degrees());
+        let (bw, bh) = Self::bounding_size(self.degrees(), w, h);
+        let (x, y) = (x - w / 2., y - h / 2.);
+        let x2 = (cos * x - sin * y) * (width / bw);
+        let y2 = (sin * x + cos * y) * (height / bh);
+        [
+            width / 2. + if self.flip_x { -x2 } else { x2 },
+            height / 2. + if self.flip_y { -y2 } else { y2 },
+        ]
+    }
+
+    pub fn unit_corners(self) -> [Point; 4] {
+        let (w, h) = self.source_size(1., 1.);
+        [[0., 0.], [w, 0.], [w, h], [0., h]].map(|p| self.point(p, 1., 1.))
+    }
+
+    fn raster_key(self) -> (u64, u64, bool, bool) {
+        (
+            self.degrees().to_bits(),
+            self.free_rotation.map_or(0, |r| r.source_aspect.to_bits()),
+            self.flip_x,
+            self.flip_y,
+        )
+    }
+
+    fn raster(self, source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+        use image::imageops;
+        let (w, h) = self.source_size(f64::from(width), f64::from(height));
+        let mut raster = imageops::resize(
+            source,
+            w.round().max(1.) as u32,
+            h.round().max(1.) as u32,
+            imageops::FilterType::Lanczos3,
+        );
+        if self.free_rotation.is_some() {
+            let [origin, right, _, bottom] = self.unit_corners();
+            let [ax, ay] = [right[0] - origin[0], right[1] - origin[1]];
+            let [bx, by] = [bottom[0] - origin[0], bottom[1] - origin[1]];
+            let inv_det = 1. / (ax * by - ay * bx);
+            return RgbaImage::from_fn(width, height, |x, y| {
+                let dx = (f64::from(x) + 0.5) / f64::from(width) - origin[0];
+                let dy = (f64::from(y) + 0.5) / f64::from(height) - origin[1];
+                let u = ((by * dx - bx * dy) * inv_det) as f32;
+                let v = ((ax * dy - ay * dx) * inv_det) as f32;
+                imageops::sample_bilinear(&raster, u, v).unwrap_or(image::Rgba([0; 4]))
+            });
+        }
+        raster = match self.turns % 4 {
+            1 => imageops::rotate90(&raster),
+            2 => imageops::rotate180(&raster),
+            3 => imageops::rotate270(&raster),
+            _ => raster,
+        };
+        if self.flip_x {
+            imageops::flip_horizontal_in_place(&mut raster);
+        }
+        if self.flip_y {
+            imageops::flip_vertical_in_place(&mut raster);
+        }
+        raster
+    }
+}
+
 /// Physical page placement of one repeated image, measured from the top-left in mm.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placement {
@@ -763,8 +1024,40 @@ pub struct Placement {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    #[serde(default, skip_serializing_if = "orientation_is_default")]
+    pub orientation: Orientation,
+}
+fn orientation_is_default(orientation: &Orientation) -> bool {
+    *orientation == Orientation::default()
 }
 impl Placement {
+    pub fn with_rotation(mut self, degrees: f64) -> Self {
+        let degrees = degrees.rem_euclid(360.);
+        if !degrees.is_finite() || degrees == self.orientation.degrees() {
+            return self;
+        }
+        let (w, h) = self.orientation.source_size(self.width, self.height);
+        let (width, height) = Orientation::bounding_size(degrees, w, h);
+        self.x += (self.width - width) / 2.;
+        self.y += (self.height - height) / 2.;
+        self.width = width;
+        self.height = height;
+        self.orientation.turns = (degrees / 90.) as u8;
+        self.orientation.free_rotation = (degrees % 90. != 0.).then_some(FreeRotation {
+            degrees,
+            source_aspect: w / h,
+        });
+        self
+    }
+
+    pub fn turned_quarter(self, clockwise: bool) -> Self {
+        // Turning the displayed image also turns its reflection axes.
+        let mut item =
+            self.with_rotation(self.orientation.degrees() + if clockwise { 90. } else { -90. });
+        std::mem::swap(&mut item.orientation.flip_x, &mut item.orientation.flip_y);
+        item
+    }
+
     pub fn moved(self, dx: f64, dy: f64, inset: f64) -> Self {
         self.moved_on(dx, dy, inset, [210., 297.])
     }
@@ -818,6 +1111,7 @@ impl Placement {
             y: if top { ay - height } else { ay },
             width,
             height,
+            ..self
         }
     }
 }
@@ -840,6 +1134,8 @@ pub struct Layout {
     pub image_tiles: Vec<[u32; 4]>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub hidden_images: std::collections::BTreeSet<usize>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub image_groups: std::collections::BTreeMap<usize, usize>,
     /// Vertical (X) and horizontal (Y) guides in page millimetres.
     #[serde(default)]
     pub guides: [Vec<f64>; 2],
@@ -879,6 +1175,7 @@ impl Default for Layout {
             custom: Default::default(),
             image_tiles: vec![],
             hidden_images: Default::default(),
+            image_groups: Default::default(),
             guides: Default::default(),
             manual_cut_paths: vec![],
             use_manual_cut_paths: false,
@@ -1212,15 +1509,11 @@ impl Layout {
                 mm(item.width).max(1),
                 mm(item.height).max(1),
                 if a.tiles.is_empty() { 0 } else { i },
+                item.orientation.raster_key(),
             );
-            let raster = cache.entry(key).or_insert_with(|| {
-                image::imageops::resize(
-                    &a.at(i).pixels,
-                    key.0,
-                    key.1,
-                    image::imageops::FilterType::Lanczos3,
-                )
-            });
+            let raster = cache
+                .entry(key)
+                .or_insert_with(|| item.orientation.raster(&a.at(i).pixels, key.0, key.1));
             image::imageops::overlay(&mut page, raster, mm(item.x) as i64, mm(item.y) as i64);
         }
         let mut rect = |x: f64, y: f64, w: f64, h: f64| {
@@ -1322,6 +1615,7 @@ impl Layout {
                     y: top + (i / cols) as f64 * (self.height + self.row_gap),
                     width: self.width,
                     height: self.height,
+                    orientation: Default::default(),
                 })
                 .collect());
         }
@@ -1340,6 +1634,7 @@ impl Layout {
                 y: 0.,
                 width: self.width,
                 height: self.height,
+                orientation: Default::default(),
             }
         };
         let limit = if fill { 1000 } else { self.count };
@@ -1353,12 +1648,14 @@ impl Layout {
                     y: top + (i / cols) as f64 * (self.height + self.row_gap),
                     width: self.width,
                     height: self.height,
+                    orientation: Default::default(),
                 })
             } else {
                 None
             };
             if let Some(p) = item {
                 if [p.x, p.y, p.width, p.height].iter().any(|v| !v.is_finite())
+                    || !p.orientation.valid()
                     || p.width < 1.
                     || p.height < 1.
                     || p.x < 0.
@@ -1403,7 +1700,7 @@ impl Layout {
                         x,
                         y,
                         width: prototype.width,
-                        height: prototype.height,
+                        ..prototype
                     };
                     let clear = occupied.iter().all(|q| {
                         p.x + p.width + self.column_gap <= q.x + 1e-8
@@ -1458,18 +1755,22 @@ impl Layout {
         }
         cache.prepare(a);
         let mut paths = Vec::new();
+        let mut groups = std::collections::BTreeMap::<usize, Vec<Vec<Point>>>::new();
         for (i, item) in self.items()?.into_iter().enumerate() {
             if self.hidden_images.contains(&i) {
                 continue;
             }
+            let group = self.image_groups.get(&i);
+            let cut_holes = self.cut_inner_holes && group.is_none();
             // Position is deliberately excluded; validation-affecting settings are retained.
             let [left, right, top, bottom] = self.margins();
+            let (width, height) = item.orientation.source_size(item.width, item.height);
             let key = [
-                item.width.to_bits(),
-                item.height.to_bits(),
+                width.to_bits(),
+                height.to_bits(),
                 self.contour_offset.to_bits(),
                 self.smoothing.to_bits(),
-                self.cut_inner_holes as u64 | ((self.preserve_corners as u64) << 1),
+                cut_holes as u64 | ((self.preserve_corners as u64) << 1),
                 self.custom.is_empty() as u64,
                 self.count as u64,
                 self.page_width.to_bits(),
@@ -1490,22 +1791,36 @@ impl Layout {
                     cache.entries.clear();
                 }
                 let mut local = self.clone();
-                local.width = item.width;
-                local.height = item.height;
+                local.width = width;
+                local.height = height;
+                local.cut_inner_holes = cut_holes;
                 if !self.custom.is_empty() {
                     local.count = 1;
                     local.custom.clear();
                 }
                 cache.entries.insert(key, local.outline_mm(a.at(i)));
             }
+            let [origin, right, _, bottom] = item.orientation.unit_corners();
+            let [dx, dy] = [right[0] - origin[0], right[1] - origin[1]];
+            let [ex, ey] = [bottom[0] - origin[0], bottom[1] - origin[1]];
+            let target = group.map_or(&mut paths, |id| groups.entry(*id).or_default());
             for outline in cache.entries[&key].as_ref().map_err(Clone::clone)? {
-                paths.push(
+                target.push(
                     outline
                         .iter()
-                        .map(|p| [item.x + p[0], item.y + p[1]])
+                        .map(|p| {
+                            let (u, v) = (p[0] / width, p[1] / height);
+                            [
+                                item.x + (origin[0] + dx * u + ex * v) * item.width,
+                                item.y + (origin[1] + dy * u + ey * v) * item.height,
+                            ]
+                        })
                         .collect(),
                 );
             }
+        }
+        for outlines in groups.into_values() {
+            paths.push(group_cut_outline(outlines)?);
         }
         Ok(paths)
     }
@@ -1604,7 +1919,16 @@ impl Layout {
                     entry.insert(base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
                 }
             };
-            write!(s,"<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"/>",p.x,p.y,p.width,p.height,data).unwrap();
+            if p.orientation == Orientation::default() {
+                write!(s,"<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"/>",p.x,p.y,p.width,p.height,data).unwrap();
+            } else {
+                let (width, height) = p.orientation.source_size(p.width, p.height);
+                let [x, y] = p.orientation.point([0., 0.], p.width, p.height);
+                let [xx, xy] = p.orientation.point([1., 0.], p.width, p.height);
+                let [yx, yy] = p.orientation.point([0., 1.], p.width, p.height);
+                write!(s, r#"<image width="{width}" height="{height}" preserveAspectRatio="none" transform="matrix({} {} {} {} {} {})" href="data:image/png;base64,{data}"/>"#,
+                    xx - x, xy - y, yx - x, yy - y, p.x + x, p.y + y).unwrap();
+            }
         }
         for (x, y) in self.manual_marks() {
             write!(s,"<path d=\"M{},{}h4 M{},{}v4\" fill=\"none\" stroke=\"black\" stroke-width=\"0.2\"/>",x-2.,y,x,y-2.).unwrap();
@@ -1811,6 +2135,7 @@ mod tests {
                     y: 15. + (i / 4) as f64 * 55.,
                     width: 32.,
                     height: 52.,
+                    orientation: Default::default(),
                 },
             );
         }
@@ -1826,7 +2151,8 @@ mod tests {
                     x: 155.,
                     y: 15. + (count - 17) as f64 * 55.,
                     width: 32.,
-                    height: 52.
+                    height: 52.,
+                    orientation: Default::default(),
                 }
             );
         }
@@ -2319,6 +2645,166 @@ mod tests {
         );
     }
     #[test]
+    fn image_groups_emit_one_outer_path_for_overlaps_and_gaps() {
+        let art = sample();
+        let mut layout = Layout {
+            count: 2,
+            ..Default::default()
+        };
+        let first = layout.items().unwrap()[0];
+        layout.custom.insert(0, first);
+        layout.custom.insert(1, Placement { x: 85., ..first });
+        let separate = layout.page_cut_paths(&art).unwrap();
+        let html = layout.print_html(&art).unwrap();
+        assert_eq!(separate.len(), 2);
+
+        layout.image_groups.extend([(0, 0), (1, 0)]);
+        let grouped = layout.page_cut_paths(&art).unwrap();
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].first(), grouped[0].last());
+        let area = |path: &[Point]| {
+            path.windows(2)
+                .map(|edge| edge[0][0] * edge[1][1] - edge[1][0] * edge[0][1])
+                .sum::<f64>()
+                .abs()
+                / 2.
+        };
+        let bridge_area = area(&grouped[0]) - separate.iter().map(|path| area(path)).sum::<f64>();
+        assert!(
+            (0. ..100.).contains(&bridge_area),
+            "Only the narrow bridge adds area"
+        );
+        assert_eq!(layout.print_html(&art).unwrap(), html);
+        assert!(layout.plt(&art).is_ok());
+        assert_eq!(
+            CcdTrial::default().cut_paths(&layout, &art).unwrap().len(),
+            1
+        );
+
+        layout.custom.get_mut(&1).unwrap().x = first.x + 10.;
+        layout.custom.get_mut(&1).unwrap().y = first.y + 10.;
+        let joined = layout.page_cut_paths(&art).unwrap();
+        assert_eq!(joined.len(), 1);
+        assert!(
+            joined[0].len() >= 9,
+            "Preserve the concave outline of connected images"
+        );
+
+        layout.hidden_images.insert(1);
+        assert_eq!(
+            layout.page_cut_paths(&art).unwrap(),
+            vec![separate[0].clone()]
+        );
+        layout.hidden_images.clear();
+        layout.image_groups.clear();
+        assert_eq!(layout.page_cut_paths(&art).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fractional_rotation_preserves_center_and_aligns_raster_and_contour() {
+        let mut layout = Layout {
+            count: 1,
+            width: 30.,
+            height: 20.,
+            ..Default::default()
+        };
+        let original = layout.items().unwrap()[0];
+        let mut art = sample();
+        art.pixels = RgbaImage::from_fn(20, 20, |x, y| {
+            if x >= 10 && y < 10 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        });
+        let path = layout.page_cut_paths(&art).unwrap().remove(0);
+        let rotated = original.with_rotation(37.5);
+        layout.custom.insert(0, rotated);
+        let center = [original.x + 15., original.y + 10.];
+        let (sin, cos) = 37.5_f64.to_radians().sin_cos();
+        let rotate = |[x, y]: Point| {
+            let (dx, dy) = (x - center[0], y - center[1]);
+            [
+                center[0] + cos * dx - sin * dy,
+                center[1] + sin * dx + cos * dy,
+            ]
+        };
+        for (p, actual) in path
+            .into_iter()
+            .zip(layout.page_cut_paths(&art).unwrap().remove(0))
+        {
+            let expected = rotate(p);
+            assert!((actual[0] - expected[0]).abs() < 1e-8);
+            assert!((actual[1] - expected[1]).abs() < 1e-8);
+        }
+        let raster = layout.print_raster(&art, None).unwrap();
+        let [x, y] = rotate([original.x + 22.5, original.y + 5.]);
+        let mm = |v: f64| (v / 25.4 * 300.).round() as u32;
+        assert!(raster.get_pixel(mm(x), mm(y))[1] < 20);
+        assert!(
+            layout
+                .print_html(&art)
+                .unwrap()
+                .contains("transform=\"matrix(")
+        );
+        assert!(layout.plt(&art).is_ok());
+
+        let json = serde_json::to_string(&rotated).unwrap();
+        let loaded: Placement = serde_json::from_str(&json).unwrap();
+        assert!((loaded.orientation.degrees() - 37.5).abs() < 1e-8);
+        let reset = loaded.with_rotation(0.);
+        assert!((reset.width - original.width).abs() < 1e-8);
+        assert!((reset.height - original.height).abs() < 1e-8);
+    }
+
+    #[test]
+    fn rotated_and_flipped_image_keeps_print_and_cut_aligned() {
+        let art = sample();
+        let mut layout = Layout {
+            count: 1,
+            width: 30.,
+            height: 20.,
+            ..Default::default()
+        };
+        let original = layout.items().unwrap()[0];
+        let first = layout.page_cut_paths(&art).unwrap().remove(0);
+        let mut item = original.turned_quarter(true);
+        item.orientation.flip(true);
+        item.x = original.x;
+        item.y = original.y;
+        layout.custom.insert(0, item);
+
+        let transformed = layout.page_cut_paths(&art).unwrap().remove(0);
+        assert_eq!(first.len(), transformed.len());
+        for ([x, y], actual) in first.into_iter().zip(transformed) {
+            assert!((actual[0] - (item.x + y - original.y)).abs() < 1e-8);
+            assert!((actual[1] - (item.y + x - original.x)).abs() < 1e-8);
+        }
+        assert!(layout.plt(&art).is_ok());
+        assert!(layout.print_html(&art).unwrap().contains(
+            r#"width="30" height="20" preserveAspectRatio="none" transform="matrix(0 1 1 0 15 15)""#
+        ));
+
+        let mut pixels = RgbaImage::from_pixel(4, 4, image::Rgba([255, 255, 255, 255]));
+        for y in 0..2 {
+            for x in 2..4 {
+                pixels.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+        let raster_art = Artwork { pixels, ..art };
+        let raster = layout.print_raster(&raster_art, None).unwrap();
+        let mm = |v: f64| (v / 25.4 * 300.).round() as u32;
+        assert!(raster.get_pixel(mm(19.), mm(39.))[1] < 20);
+        assert!(raster.get_pixel(mm(31.), mm(21.))[1] > 240);
+
+        let old: Placement =
+            serde_json::from_str(r#"{"x":15,"y":15,"width":30,"height":20}"#).unwrap();
+        assert_eq!(old, original);
+        let saved = serde_json::to_string(&item).unwrap();
+        assert_eq!(serde_json::from_str::<Placement>(&saved).unwrap(), item);
+    }
+
+    #[test]
     fn print_cut_positions_match() {
         let a = sample();
         let l = Layout {
@@ -2468,6 +2954,7 @@ mod tests {
                 y: h - 70.,
                 width: 35.,
                 height: 35.,
+                orientation: Default::default(),
             };
             l.custom.insert(0, item);
             let html = l.print_html(&a).unwrap();
@@ -2524,6 +3011,7 @@ mod tests {
             y: 120.,
             width: 40.,
             height: 30.,
+            orientation: Default::default(),
         }
         .moved_on(1000., 1000., 10., [420., 297.]);
         assert_eq!((point.x, point.y), (370., 257.));
@@ -2548,6 +3036,7 @@ mod tests {
                 y: 40.,
                 width: 15.,
                 height: 25.,
+                orientation: Default::default(),
             },
         );
         l.custom.insert(
@@ -2557,6 +3046,7 @@ mod tests {
                 y: 90.,
                 width: 30.,
                 height: 12.,
+                orientation: Default::default(),
             },
         );
         let paths = l.page_cut_paths(&a).unwrap();
@@ -2597,6 +3087,7 @@ mod tests {
                 y: 20.,
                 width: 10.,
                 height: 10.,
+                orientation: Default::default(),
             },
         );
         assert!(l.items().is_err());
@@ -2608,6 +3099,7 @@ mod tests {
             y: 50.,
             width: 20.,
             height: 30.,
+            orientation: Default::default(),
         };
         for corner in 0..4 {
             let left = corner == 0 || corner == 3;

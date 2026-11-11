@@ -80,7 +80,7 @@ impl Project {
             return Err("Project image exceeds 30 MB.".into());
         }
         if !source.is_empty() && recovery {
-            image::load_from_memory(&source).map_err(|e| format!("Damaged recovery image: {e}"))?;
+            mc630_plt_studio::sheet::decode_image(&source).map_err(|e| format!("Damaged recovery image: {e}"))?;
         }
         if trace && ((!source.is_empty() && !recovery) || !self.settings.layout.image_tiles.is_empty()) {
             self.settings.layout.trace_images(

@@ -13,6 +13,7 @@ mod canvas_camera;
 mod duplex;
 mod cut_tools;
 mod file_association;
+mod image_import;
 mod palette_state;
 mod photo_size;
 mod preferences;
@@ -600,7 +601,9 @@ impl Studio {
         let mut context_command = None;
         let mut tab_rects = Vec::new();
         let busy = self.a4.tab_busy() || self.closing_all || self.save_all.is_some() || self.pending_new.is_some();
-        let bar = egui::TopBottomPanel::top("project-tabs").show(ctx, |ui| {
+        let bar = egui::TopBottomPanel::top("project-tabs")
+            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(ui_theme::TAB_STRIP))
+            .show(ctx, |ui| {
             egui::ScrollArea::horizontal()
                 .drag_to_scroll(false)
                 .show(ui, |ui| {
@@ -613,17 +616,14 @@ impl Studio {
                             };
                             ui.push_id(index, |ui| {
                                 let active = index == self.active_tab;
-                                let visuals = ui.visuals();
-                                let fill = if active { visuals.selection.bg_fill } else { visuals.widgets.inactive.bg_fill };
-                                let stroke = if active { visuals.selection.stroke } else { visuals.widgets.inactive.bg_stroke };
-                                let tab = egui::Frame::NONE.fill(fill).stroke(stroke).corner_radius(ui_theme::BUTTON_RADIUS).inner_margin(egui::Margin::symmetric(3, 1)).show(ui, |ui| {
+                                let fill = if active { ui.visuals().panel_fill } else { egui::Color32::TRANSPARENT };
+                                let tab = egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(4, 1)).show(ui, |ui| {
                                   ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.;
                                     let response = ui.add_enabled(
                                         !busy,
                                         egui::Button::new(label)
                                             .frame(false)
-                                            .corner_radius(ui_theme::BUTTON_RADIUS)
                                             .sense(egui::Sense::click_and_drag()),
                                     );
                                     if response.drag_started_by(egui::PointerButton::Primary)
@@ -678,11 +678,16 @@ impl Studio {
                                     }
                                 });
                                   });
+                                if active {
+                                    ui_theme::underline_tab(ui, tab.response.rect);
+                                }
                                 tab_rects.push(tab.response.rect);
                             });
                             ui.separator();
                         }
-                        new = ui.add_enabled_ui(!busy, |ui| icon_button(ui, Icon::New, "New document (Ctrl+N)")).inner;
+                        new = ui.add_enabled(!busy, egui::Button::new("+").frame(false))
+                            .on_hover_text("New document (Ctrl+N)")
+                            .clicked();
                     });
                 });
         });
@@ -809,6 +814,9 @@ impl eframe::App for Studio {
             self.a4.apply_palette_state(self.palette.state);
             self.a4.document_menu(ctx, &mut self.updates, frame);
             self.a4.standard_toolbar(ctx, frame);
+            if !self.empty_workspace && self.save_all.is_none() {
+                self.a4.tool_options_bar(ctx);
+            }
             self.tab_bar(ctx);
             if self.save_all.is_some() {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -844,6 +852,7 @@ impl eframe::App for Studio {
             } else {
                 self.a4.ui(ctx);
             }
+            self.a4.web_image_dialog(ctx);
             if !ctx.input(|i| i.pointer.any_down()) {
                 if let Err(error) = self.palette.persist(self.a4.palette_state()) {
                     self.a4
