@@ -24,7 +24,7 @@ fn main() {
     let (html, plt) = CcdTrial::default().pair(&layout, &art).unwrap();
     let out = std::path::Path::new("examples/OBJECT-DEMO");
     std::fs::create_dir_all(out).unwrap();
-    std::fs::write(out.join("object.png"), &art.png).unwrap();
+    art.pixels.save(out.join("object.png")).unwrap();
     std::fs::write(out.join("PRINT.html"), html).unwrap();
     std::fs::write(out.join("CUT.plt"), plt).unwrap();
     println!("{} contours, {} holes", art.outlines.len(), art.holes.len());

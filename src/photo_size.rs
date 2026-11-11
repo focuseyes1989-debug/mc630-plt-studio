@@ -90,19 +90,20 @@ pub fn append_image_bytes(
     let width = (f64::from(image.width()) * 25.4 / dx).max(1.);
     let height = (f64::from(image.height()) * 25.4 / dy).max(1.);
 
-    let mut xs = vec![inset];
-    let mut ys = vec![inset];
+    let [left, right, top, bottom] = layout.margins().map(|margin| margin.max(inset));
+    let mut xs = vec![left];
+    let mut ys = vec![top];
     for item in &items {
-        xs.push((item.x + item.width + layout.column_gap).max(inset));
-        ys.push((item.y + item.height + layout.row_gap).max(inset));
+        xs.push((item.x + item.width + layout.column_gap).max(left));
+        ys.push((item.y + item.height + layout.row_gap).max(top));
     }
     xs.sort_by(f64::total_cmp);
     ys.sort_by(f64::total_cmp);
     let mut placement = None;
     'search: for y in ys {
         for &x in &xs {
-            if x + width <= layout.page_width - inset + 1e-8
-                && y + height <= layout.page_height - inset + 1e-8
+            if x + width <= layout.page_width - right + 1e-8
+                && y + height <= layout.page_height - bottom + 1e-8
                 && items.iter().all(|item| {
                     x + width + layout.column_gap <= item.x + 1e-8
                         || item.x + item.width + layout.column_gap <= x + 1e-8

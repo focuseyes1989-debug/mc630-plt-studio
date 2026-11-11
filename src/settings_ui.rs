@@ -136,7 +136,7 @@ egui::ComboBox::from_id_salt("settings-unit").selected_text(match self.unit{Unit
                         ui.selectable_value(&mut self.unit,Unit::Inches,"Inches (in) - default");ui.selectable_value(&mut self.unit,Unit::Cm,"Centimetres (cm)");ui.selectable_value(&mut self.unit,Unit::Mm,"Millimetres (mm)");
                     });
                     ui.checkbox(&mut self.reopen_last_project,"Reopen all project tabs on startup");
-                    if ui.button("Set Studio as default for .mc630").clicked(){
+                    if icon_button(ui, Icon::Open, "Set Studio as default for .mc630"){
                         self.status=match std::env::current_exe().map_err(|e|e.to_string()).and_then(|exe|crate::file_association::configure_default(&exe)){Ok(())=>"Project icon registered. In Windows Default apps, choose MC630 PLT Studio for .mc630 files.".into(),Err(e)=>format!("Could not register project files: {e}")};
                     }
                     ui.horizontal(|ui|{ui.label("Arrow key step");ui.add(self.unit.distance(&mut self.nudge_fine).range(0.001..=100.));});
@@ -155,7 +155,7 @@ egui::ComboBox::from_id_salt("settings-paper").selected_text(self.layout.paper_l
                             if ui.selectable_label(false,format!("{name}  {}",self.unit.size(w,h))).clicked(){self.layout.page_width=w;self.layout.page_height=h;}
                         }
                     });
-                    ui.horizontal(|ui|{if ui.button("Swap portrait / landscape").clicked(){std::mem::swap(&mut self.layout.page_width,&mut self.layout.page_height);}});
+                    ui.horizontal(|ui|{if icon_button(ui, Icon::Swap, "Swap portrait / landscape"){std::mem::swap(&mut self.layout.page_width,&mut self.layout.page_height);}});
                     ui.horizontal(|ui|{ui.label("Paper width");ui.add(self.unit.distance(&mut self.layout.page_width).range(50.0..=630.));});
                     ui.horizontal(|ui|{ui.label("Paper height");ui.add(self.unit.distance(&mut self.layout.page_height).range(50.0..=2000.));});
 }
@@ -166,7 +166,7 @@ egui::Grid::new("settings-layout").num_columns(2).show(ui,|ui| {
                         ui.label("Copies");ui.add_enabled(self.layout.image_tiles.is_empty(), egui::DragValue::new(&mut self.layout.count).range(1..=1000));ui.end_row();
                         ui.label("Column spacing");ui.add(self.unit.distance(&mut self.layout.column_gap).range(0.0..=100.));ui.end_row();
                         ui.label("Row spacing");ui.add(self.unit.distance(&mut self.layout.row_gap).range(0.0..=100.));ui.end_row();
-                        ui.label("Page margin");ui.add(self.unit.distance(&mut self.layout.margin).range(5.0..=100.));ui.end_row();
+                        self.edit_margin_fields(ui);
                     });
                     ui.checkbox(&mut self.lock,"Lock proportions for resize");
 }
@@ -200,10 +200,10 @@ ui.checkbox(&mut self.ccd_trial,"CCD camera - four dots");
 ui.checkbox(&mut self.rulers,"Show rulers");ui.checkbox(&mut self.grid,"Show grid");
                     ui.add(egui::Slider::new(&mut self.zoom,0.5..=16.0).custom_formatter(|v,_|format!("{:.0}%",v*100.)).text("Zoom"));
                     ui.horizontal(|ui| { ui.label("Cut line color"); ui.color_edit_button_srgba(&mut self.contour_color); });
-                    if ui.button("Fit page / reset view").clicked(){self.zoom=1.;self.canvas_pan=egui::Vec2::ZERO;}
+                    if icon_button(ui, Icon::Fit, "Fit page / reset view"){self.zoom=1.;self.canvas_pan=egui::Vec2::ZERO;}
 }
 8 => {
-if ui.button("Open Print dialog…").clicked() {
+if icon_button(ui, Icon::Print, "Open Print dialog") {
     close = true;
     self.show_print_dialog = true;
 }
@@ -214,10 +214,10 @@ if ui.button("Open Print dialog…").clicked() {
                 });
                 ui.separator();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_sized([80., 30.], egui::Button::new("Close")).clicked() {
+                    if icon_button(ui, Icon::Close, "Close settings") {
                         close = true;
                     }
-                    if ui.add_sized([114., 30.], egui::Button::new("Save settings").fill(ui.visuals().selection.bg_fill)).clicked() {
+                    if icon_button(ui, Icon::Save, "Save settings") {
                         self.status = match self.preferences().save() {
                             Ok(()) => "Settings saved.".into(),
                             Err(error) => format!("Cannot save settings: {error}"),

@@ -1,3 +1,4 @@
+use crate::ui_theme::{Icon, icon_button, icon_toggle};
 use eframe::egui;
 
 use mc630_plt_studio::sheet::{self, Artwork, Layout};
@@ -130,7 +131,7 @@ impl CanvasDrag {
     }
 }
 enum ObjectEdit {
-    PageSize(Box<Layout>),
+    PageGeometry(Box<Layout>),
     Positions(std::collections::BTreeMap<usize, sheet::Placement>),
     Layers(Box<Layout>),
     LastImage(Box<Layout>, Vec<u8>, String),
@@ -258,6 +259,7 @@ pub struct A4Studio {
     new_preset: usize,
     new_width: f64,
     new_height: f64,
+    new_margins: [f64; 4],
     new_landscape: bool,
     contour_color: egui::Color32,
     selected: Option<usize>,
@@ -295,7 +297,7 @@ struct PageSizeEditor {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,cut_draft:None,cut_corner_radius:0.,pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,panning:false,rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -320,7 +322,7 @@ impl A4Studio {
         scale: f32,
         axis: Option<usize>,
     ) -> (f64, f64) {
-        if delta == (0., 0.) || !self.snap_guides || self.layout.guides.iter().all(Vec::is_empty) {
+        if delta == (0., 0.) || !self.snap_guides {
             return delta;
         }
         let mut adjusted = [delta.0, delta.1];
@@ -342,6 +344,20 @@ impl A4Studio {
                         if shift.abs() <= threshold && best.is_none_or(|v| shift.abs() < v.abs()) {
                             best = Some(shift);
                         }
+                    }
+                }
+            }
+            let lines = self.layout.margin_lines()[i];
+            for (_, item) in members {
+                let (start, end) = if i == 0 {
+                    (item.x, item.x + item.width)
+                } else {
+                    (item.y, item.y + item.height)
+                };
+                for (edge, margin) in [start, end].into_iter().zip(lines) {
+                    let shift = margin - (edge + *offset);
+                    if shift.abs() <= threshold && best.is_none_or(|value| shift.abs() < value.abs()) {
+                        best = Some(shift);
                     }
                 }
             }
@@ -811,11 +827,11 @@ impl A4Studio {
                         std::fs::write(
                             folder.join("SETUP.txt"),
                             format!(
-                                "A4 portrait 210 x 297 mm\nCopies: {}\nImage size: {} x {} mm\nMargin: {} mm, column gap: {} mm, row gap: {} mm\nUnits/mm: {}\nCut offsets: {}, {} mm\nFlip X: {}, Flip Y: {}\n\nPRINT.html: Open and print at 100% / Actual size, no margins, no headers/footers. Do not use Fit to page.\nCUT.plt: Copy to USB stick. Coordinates use the A4 lower-left corner as origin before flips/offsets. Manually align sheet and blade origin; use a pen test first.\nThe four crosses are visual alignment references, NOT a verified MC630 automatic registration format. Scale/rotation/skew compensation is not automatic. Re-export both files after changing layout.\nTrace: outer alpha silhouettes, alpha >=128; white removal: {}, white threshold: {}. Interior holes follow the Cut inner holes setting below. No image bleed is generated. See Cut border distance below.\n",
+                                "A4 portrait 210 x 297 mm\nCopies: {}\nImage size: {} x {} mm\nMargins (left, right, top, bottom): {:?} mm, column gap: {} mm, row gap: {} mm\nUnits/mm: {}\nCut offsets: {}, {} mm\nFlip X: {}, Flip Y: {}\n\nPRINT.html: Open and print at 100% / Actual size, no margins, no headers/footers. Do not use Fit to page.\nCUT.plt: Copy to USB stick. Coordinates use the A4 lower-left corner as origin before flips/offsets. Manually align sheet and blade origin; use a pen test first.\nThe four crosses are visual alignment references, NOT a verified MC630 automatic registration format. Scale/rotation/skew compensation is not automatic. Re-export both files after changing layout.\nTrace: outer alpha silhouettes, alpha >=128; white removal: {}, white threshold: {}. Interior holes follow the Cut inner holes setting below. No image bleed is generated. See Cut border distance below.\n",
                                 self.layout.count,
                                 self.layout.width,
                                 self.layout.height,
-                                self.layout.margin,
+                                self.layout.margins(),
                                 self.layout.column_gap,
                                 self.layout.row_gap,
                                 self.layout.units,
@@ -962,6 +978,9 @@ impl A4Studio {
         let mut next = self.layout.clone();
         next.page_width = width;
         next.page_height = height;
+        if next.page_margins.is_some() {
+            next.capacity()?;
+        }
         if self.art.is_some() {
             // Page width must not reflow existing implicit grid copies.
             if let Ok(items) = self.layout.items() {
@@ -986,7 +1005,7 @@ impl A4Studio {
             self.ccd_profile.pair(&next, art)?;
         }
         let previous = std::mem::replace(&mut self.layout, next);
-        self.record_layer_edit(ObjectEdit::PageSize(Box::new(previous)));
+        self.record_layer_edit(ObjectEdit::PageGeometry(Box::new(previous)));
         self.preview_cache = None;
         self.capacity_cache = None;
         self.zoom = 1.;
@@ -1057,7 +1076,7 @@ impl A4Studio {
                     ui.end_row();
                 });
             ui.add_space(10.);
-            if ui.button("Swap width / height").clicked() {
+            if icon_button(ui, Icon::Swap, "Swap width / height") {
                 std::mem::swap(&mut draft.width, &mut draft.height);
                 draft.error = None;
             }
@@ -1068,8 +1087,8 @@ impl A4Studio {
             ui.add_space(10.);
             ui.separator();
             ui.horizontal(|ui| {
-                apply = ui.button("Apply").clicked();
-                cancel = ui.button("Cancel").clicked();
+                apply = icon_button(ui, Icon::Check, "Apply page size");
+                cancel = icon_button(ui, Icon::Close, "Cancel page size change");
             });
         });
         if apply {
@@ -1089,32 +1108,101 @@ impl A4Studio {
         }
         let mut open = true;
         let mut create = false;
-        egui::Window::new("New document").open(&mut open).collapsible(false).resizable(false).default_width(450.).show(ctx,|ui|{
-            ui.heading("Create a new print & cut document");ui.add_space(10.);
-            let previous=self.new_preset;
-            egui::ComboBox::from_id_salt("new-paper-preset").selected_text(sheet::PAPER_PRESETS.get(self.new_preset).map(|p|p.0).unwrap_or("Custom")).width(280.).show_ui(ui,|ui|{
-                for (i,(name,w,h)) in sheet::PAPER_PRESETS.iter().enumerate(){ui.selectable_value(&mut self.new_preset,i,format!("{name}   {}",self.unit.size(*w,*h)));}
-                ui.selectable_value(&mut self.new_preset,sheet::PAPER_PRESETS.len(),"Custom size");
+        egui::Window::new("New document")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.)
+            .default_pos(ctx.screen_rect().center() - egui::vec2(205., 215.))
+            .show(ctx, |ui| {
+                let previous = self.new_preset;
+                egui::Grid::new("new-document-form")
+                    .num_columns(2)
+                    .min_col_width(105.)
+                    .spacing([18., 8.])
+                    .show(ui, |ui| {
+                        ui.label("Paper");
+                        egui::ComboBox::from_id_salt("new-paper-preset")
+                            .selected_text(sheet::PAPER_PRESETS.get(self.new_preset)
+                                .map(|preset| preset.0).unwrap_or("Custom"))
+                            .width(195.)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, w, h)) in sheet::PAPER_PRESETS.iter().enumerate() {
+                                    ui.selectable_value(&mut self.new_preset, i,
+                                        format!("{name}   {}", self.unit.size(*w, *h)));
+                                }
+                                ui.selectable_value(&mut self.new_preset, sheet::PAPER_PRESETS.len(), "Custom size");
+                            });
+                        ui.end_row();
+                        if previous != self.new_preset
+                            && let Some(&(_, w, h)) = sheet::PAPER_PRESETS.get(self.new_preset)
+                        {
+                            (self.new_width, self.new_height) = if self.new_landscape { (h, w) } else { (w, h) };
+                        }
+
+                        ui.label("Orientation");
+                        let orientation = self.new_landscape;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.new_landscape, false, "Portrait");
+                            ui.selectable_value(&mut self.new_landscape, true, "Landscape");
+                        });
+                        ui.end_row();
+                        if orientation != self.new_landscape {
+                            std::mem::swap(&mut self.new_width, &mut self.new_height);
+                        }
+
+                        let mut size_changed = false;
+                        for (label, value) in [("Page width", &mut self.new_width), ("Page height", &mut self.new_height)] {
+                            ui.label(label);
+                            size_changed |= Self::document_stepper(ui, self.unit, value, 50.);
+                            ui.end_row();
+                        }
+                        if size_changed {
+                            self.new_preset = sheet::PAPER_PRESETS.len();
+                            self.new_landscape = self.new_width > self.new_height;
+                        }
+                    });
+
+                ui.separator();
+                ui.strong("Page margins");
+                egui::Grid::new("new-margins")
+                    .num_columns(2)
+                    .min_col_width(105.)
+                    .spacing([18., 8.])
+                    .show(ui, |ui| {
+                        for (label, value) in ["Left margin", "Right margin", "Top margin", "Bottom margin"]
+                            .into_iter().zip(&mut self.new_margins)
+                        {
+                            ui.label(label);
+                            Self::document_stepper(ui, self.unit, value, 0.);
+                            ui.end_row();
+                        }
+                    });
+
+                let margins_fit = Layout::margins_fit(self.new_margins, self.new_width, self.new_height);
+                let valid_size = (50. ..=630.).contains(&self.new_width)
+                    && (50. ..=2000.).contains(&self.new_height);
+                if !valid_size {
+                    ui.colored_label(egui::Color32::from_rgb(150, 60, 20),
+                        "Width must be 50–630 mm and height 50–2000 mm.");
+                } else if !margins_fit {
+                    ui.colored_label(egui::Color32::from_rgb(150, 60, 20),
+                        "Margins must leave at least 1 mm of usable width and height.");
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        create = ui.add_enabled(valid_size && margins_fit,
+                            egui::Button::new(egui::RichText::new("Create document").color(egui::Color32::WHITE))
+                                .fill(crate::ui_theme::ACCENT)
+                                .min_size(egui::vec2(132., 30.)))
+                            .clicked();
+                        if ui.button("Cancel").clicked() {
+                            self.show_new = false;
+                        }
+                    });
+                });
             });
-            if previous!=self.new_preset{if let Some(&(_,w,h))=sheet::PAPER_PRESETS.get(self.new_preset){(self.new_width,self.new_height)=if self.new_landscape{(h,w)}else{(w,h)};}}
-            ui.add_space(8.);let orientation=self.new_landscape;
-            ui.horizontal(|ui|{ui.label("Orientation");ui.selectable_value(&mut self.new_landscape,false,"Portrait");ui.selectable_value(&mut self.new_landscape,true,"Landscape");});
-            if orientation!=self.new_landscape{std::mem::swap(&mut self.new_width,&mut self.new_height);}
-            ui.add_space(8.);
-            egui::Grid::new("new-paper-dimensions").num_columns(2).spacing([24.,10.]).show(ui,|ui|{
-                ui.label("Page width");if ui.add(self.unit.distance(&mut self.new_width).range(50.0..=2000.).speed(0.1)).changed(){self.new_preset=sheet::PAPER_PRESETS.len();self.new_landscape=self.new_width>self.new_height;}ui.end_row();
-                ui.label("Page height");if ui.add(self.unit.distance(&mut self.new_height).range(50.0..=2000.).speed(0.1)).changed(){self.new_preset=sheet::PAPER_PRESETS.len();self.new_landscape=self.new_width>self.new_height;}ui.end_row();
-            });
-            ui.add_space(12.);
-            let valid=self.new_width.is_finite()&&self.new_height.is_finite()&&(50. ..=630.).contains(&self.new_width)&&(50. ..=2000.).contains(&self.new_height);
-            if !valid{ui.colored_label(egui::Color32::from_rgb(170,65,20),"MC630 document width: 50-630 mm. Height: 50-2000 mm. Choose the other orientation or a smaller custom size.");}
-            ui.small("Creates a blank document and replaces the current unsaved layout. Printer preferences stay as configured.");
-            ui.small("For direct printing, select the same paper size and orientation in Printing Preferences.");
-            ui.add_space(12.);ui.horizontal(|ui|{
-                if ui.add_enabled(valid,egui::Button::new("Create document").min_size(egui::vec2(160.,32.))).clicked(){create=true;}
-                if ui.button("Cancel").clicked(){self.show_new=false;}
-            });
-        });
         if !open {
             self.show_new = false;
         }
@@ -1125,6 +1213,7 @@ impl A4Studio {
             self.layout = Layout {
                 page_width: self.new_width,
                 page_height: self.new_height,
+                page_margins: Some(self.new_margins),
                 units: self.layout.units,
                 offset_x: -7.,
                 offset_y: -7.,
@@ -1136,8 +1225,9 @@ impl A4Studio {
             self.pick_cut_shapes = false;
             self.selected_cut_shape = None;
             self.cut_shape_drag = None;
-            let size = (self.new_width - 30.)
-                .min(self.new_height - 30.)
+            let [left, right, top, bottom] = self.layout.margins();
+            let size = (self.new_width - left - right)
+                .min(self.new_height - top - bottom)
                 .clamp(1., 35.);
             self.layout.width = size;
             self.layout.height = size;
@@ -1230,13 +1320,14 @@ impl A4Studio {
     fn swap_object_edit(&mut self, edit: ObjectEdit, ctx: &egui::Context) -> ObjectEdit {
         self.drag = None;
         match edit {
-            ObjectEdit::PageSize(mut layout) => {
+            ObjectEdit::PageGeometry(mut layout) => {
                 std::mem::swap(&mut self.layout.page_width, &mut layout.page_width);
                 std::mem::swap(&mut self.layout.page_height, &mut layout.page_height);
+                std::mem::swap(&mut self.layout.page_margins, &mut layout.page_margins);
                 std::mem::swap(&mut self.layout.custom, &mut layout.custom);
                 self.preview_cache = None;
                 self.capacity_cache = None;
-                ObjectEdit::PageSize(layout)
+                ObjectEdit::PageGeometry(layout)
             }
             ObjectEdit::ManualCuts(paths, enabled) => {
                 self.cut_draft = None;
@@ -1892,6 +1983,51 @@ impl A4Studio {
         }
         self.record_object_edit(before);
     }
+    fn document_stepper(ui: &mut egui::Ui, unit: Unit, value: &mut f64, min: f64) -> bool {
+        let before = *value;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.;
+            ui.add_sized([110., 28.], unit.distance(value)
+                .speed(0.1).range(min..=2000.).update_while_editing(false));
+            if ui.add_sized([28., 28.], egui::Button::new("−")).on_hover_text("Decrease by 1 mm").clicked() {
+                *value = (*value - 1.).max(min);
+            }
+            if ui.add_sized([28., 28.], egui::Button::new("+")).on_hover_text("Increase by 1 mm").clicked() {
+                *value = (*value + 1.).min(2000.);
+            }
+        });
+        *value != before
+    }
+
+    fn margin_fields(ui: &mut egui::Ui, unit: Unit, margins: &mut [f64; 4]) {
+        for (label, margin) in ["Left margin", "Right margin", "Top margin", "Bottom margin"]
+            .into_iter().zip(margins)
+        {
+            ui.label(label);
+            ui.add(unit.distance(margin).speed(0.1).range(0. ..=2000.).update_while_editing(false));
+            ui.end_row();
+        }
+    }
+
+    fn edit_margin_fields(&mut self, ui: &mut egui::Ui) {
+        let previous = self.layout.margins();
+        let mut margins = previous;
+        Self::margin_fields(ui, self.unit, &mut margins);
+        if margins == previous {
+            return;
+        }
+        if !Layout::margins_fit(margins, self.layout.page_width, self.layout.page_height) {
+            self.status = "Margins must leave at least 1 mm of usable width and height.".into();
+            return;
+        }
+        let previous_layout = self.layout.clone();
+        if self.art.is_some() && let Ok(items) = self.layout.items() {
+            self.layout.custom = items.into_iter().enumerate().collect();
+        }
+        self.layout.page_margins = Some(margins);
+        self.record_layer_edit(ObjectEdit::PageGeometry(Box::new(previous_layout)));
+    }
+
     fn edit_inset(&self) -> f64 {
         if self.ccd_trial {
             self.ccd_profile.inset + self.ccd_profile.diameter / 2. + 3.
@@ -2317,197 +2453,6 @@ impl A4Studio {
             }
         }
     }
-    fn tool_icon(ui: &mut egui::Ui, kind: u8, selected: bool, hint: &str) -> bool {
-        let (r, response) = ui.allocate_exact_size(egui::vec2(32., 32.), egui::Sense::click());
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, hint)
-        });
-        let painter = ui.painter();
-        if selected || response.hovered() {
-            painter.rect_filled(
-                r,
-                crate::ui_theme::BUTTON_RADIUS,
-                if selected {
-                    egui::Color32::from_gray(176)
-                } else {
-                    egui::Color32::from_gray(220)
-                },
-            );
-        }
-        let ink = egui::Stroke::new(
-            1.4_f32,
-            if ui.is_enabled() {
-                egui::Color32::from_gray(55)
-            } else {
-                egui::Color32::from_gray(150)
-            },
-        );
-        let p = |x: f32, y: f32| r.min + egui::vec2(x, y);
-        let line = |a: (f32, f32), b: (f32, f32)| {
-            painter.line_segment([p(a.0, a.1), p(b.0, b.1)], ink);
-        };
-        match kind {
-            0 => {
-                line((8., 22.), (8., 26.));
-                line((8., 26.), (24., 26.));
-                line((24., 26.), (24., 22.));
-                line((16., 22.), (16., 7.));
-                line((10., 13.), (16., 7.));
-                line((16., 7.), (22., 13.));
-            }
-            1 => {
-                for (y, x) in [(9., 12.), (16., 21.), (23., 15.)] {
-                    line((6., y), (26., y));
-                    painter.rect_filled(
-                        egui::Rect::from_center_size(p(x, y), egui::vec2(4., 6.)),
-                        1.,
-                        egui::Color32::from_gray(60),
-                    );
-                }
-            }
-            2 => {
-                line((10., 6.), (23., 6.));
-                line((10., 6.), (10., 12.));
-                line((23., 6.), (23., 12.));
-                for (a, b) in [
-                    ((6., 12.), (27., 12.)),
-                    ((6., 12.), (6., 23.)),
-                    ((27., 12.), (27., 23.)),
-                    ((6., 23.), (10., 23.)),
-                    ((23., 23.), (27., 23.)),
-                    ((10., 19.), (23., 19.)),
-                    ((10., 19.), (10., 28.)),
-                    ((23., 19.), (23., 28.)),
-                    ((10., 28.), (23., 28.)),
-                ] {
-                    line(a, b);
-                }
-            }
-            3 => {
-                painter.add(egui::Shape::closed_line(
-                    vec![p(6., 20.), p(10., 8.), p(22., 6.), p(27., 19.), p(18., 27.)],
-                    ink,
-                ));
-            }
-            4 => {
-                for n in [7., 16., 25.] {
-                    line((n, 7.), (n, 25.));
-                    line((7., n), (25., n));
-                }
-            }
-            6 => {
-                painter.add(egui::Shape::closed_line(
-                    vec![p(9., 5.), p(19., 5.), p(24., 10.), p(24., 27.), p(9., 27.)],
-                    ink,
-                ));
-                line((13., 17.), (20., 17.));
-                line((16.5, 13.5), (16.5, 20.5));
-            }
-            7 => {
-                painter.add(egui::Shape::closed_line(
-                    vec![
-                        p(5., 24.),
-                        p(5., 8.),
-                        p(13., 8.),
-                        p(16., 11.),
-                        p(27., 11.),
-                        p(24., 24.),
-                    ],
-                    ink,
-                ));
-                line((5., 24.), (9., 14.));
-                line((9., 14.), (26., 14.));
-            }
-            8 => {
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(p(6., 6.), p(26., 26.)),
-                    2.,
-                    ink,
-                    egui::StrokeKind::Inside,
-                );
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(p(10., 6.), p(21., 13.)),
-                    0.,
-                    ink,
-                    egui::StrokeKind::Inside,
-                );
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(p(10., 18.), p(22., 26.)),
-                    0.,
-                    ink,
-                    egui::StrokeKind::Inside,
-                );
-            }
-            9 | 10 => {
-                let right = if kind == 10 { 21. } else { 26. };
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(p(6., 7.), p(right, 25.)),
-                    2.,
-                    ink,
-                    egui::StrokeKind::Inside,
-                );
-                painter.circle_stroke(p(11., 12.), 1.6, ink);
-                line((7., 22.), (13., 17.));
-                line((13., 17.), (17., 20.));
-                line((17., 20.), (right - 1., 16.));
-                if kind == 10 {
-                    line((22., 13.), (30., 13.));
-                    line((26., 9.), (26., 17.));
-                }
-            }
-            11 => {
-                line((7., 23.), (7., 27.));
-                line((7., 27.), (25., 27.));
-                line((25., 27.), (25., 23.));
-                line((16., 6.), (16., 22.));
-                line((11., 17.), (16., 22.));
-                line((16., 22.), (21., 17.));
-            }
-            12 => {
-                painter.add(egui::Shape::closed_line(
-                    vec![
-                        p(7., 25.),
-                        p(10., 14.),
-                        p(21., 7.),
-                        p(25., 11.),
-                        p(18., 22.),
-                    ],
-                    ink,
-                ));
-                line((7., 25.), (15., 17.));
-                painter.circle_filled(p(15., 17.), 1.5, ink.color);
-            }
-            13 => {
-                painter.circle_stroke(p(16., 16.), 9., ink);
-            }
-            15 => {
-                painter.add(egui::Shape::closed_line(
-                    vec![p(8., 5.), p(24., 18.), p(17., 19.), p(14., 27.)],
-                    ink,
-                ));
-            }
-            14 => {
-                painter.rect_stroke(
-                    egui::Rect::from_min_max(p(6., 8.), p(26., 24.)),
-                    4.,
-                    ink,
-                    egui::StrokeKind::Inside,
-                );
-            }
-            _ => {
-                for (x, y, dx, dy) in [
-                    (7., 7., 7., 7.),
-                    (25., 7., -7., 7.),
-                    (7., 25., 7., -7.),
-                    (25., 25., -7., -7.),
-                ] {
-                    line((x, y), (x + dx, y));
-                    line((x, y), (x, y + dy));
-                }
-            }
-        }
-        response.on_hover_text(hint).clicked()
-    }
     fn choose_image(&mut self, ctx: &egui::Context) {
         if !self.source.is_empty() {
             self.choose_add_image(ctx);
@@ -2536,7 +2481,7 @@ impl A4Studio {
     }
 
     fn add_image(&mut self, path: &std::path::Path, ctx: &egui::Context) {
-        let inset = self.layout.margin.max(self.edit_inset());
+        let inset = self.edit_inset();
         let result = crate::photo_size::append_image(&self.layout, &self.source, path, inset);
         self.finish_add_image(result, ctx);
     }
@@ -2581,23 +2526,35 @@ impl A4Studio {
             Ok(bytes) if self.source.is_empty() => {
                 self.install_single_image(bytes, "Clipboard image".into(), ctx);
                 if self.art.is_some() {
-                    let inset = self.layout.margin.max(self.edit_inset());
-                    let max_width = self.layout.page_width - 2. * inset;
-                    let max_height = self.layout.page_height - 2. * inset;
+                    let inset = self.edit_inset();
+                    let [left, right, top, bottom] = self.layout.margins().map(|margin| margin.max(inset));
+                    let max_width = self.layout.page_width - left - right;
+                    let max_height = self.layout.page_height - top - bottom;
                     let fit = (max_width / self.layout.width)
                         .min(max_height / self.layout.height)
                         .min(1.);
                     if fit > 0. && fit < 1. {
-                        self.layout.margin = inset;
                         self.layout.width *= fit;
                         self.layout.height *= fit;
                         self.status
                             .push_str(" Pasted image was scaled to fit the sheet.");
                     }
+                    let [margin_left, margin_right, margin_top, margin_bottom] = self.layout.margins();
+                    if [margin_left, margin_right, margin_top, margin_bottom].iter().any(|&margin| margin < inset)
+                        && self.layout.width <= max_width
+                        && self.layout.height <= max_height
+                    {
+                        self.layout.custom.insert(0, sheet::Placement {
+                            x: left,
+                            y: top,
+                            width: self.layout.width,
+                            height: self.layout.height,
+                        });
+                    }
                 }
             }
             Ok(bytes) => {
-                let inset = self.layout.margin.max(self.edit_inset());
+                let inset = self.edit_inset();
                 let result = crate::photo_size::append_image_bytes(
                     &self.layout,
                     &self.source,
@@ -2645,13 +2602,11 @@ impl A4Studio {
     }
 
     fn load_image_group(&mut self, paths: &[PathBuf], ctx: &egui::Context) {
-        let inset = self.layout.margin.max(self.edit_inset());
+        let inset = self.edit_inset();
+        let [left, right, top, bottom] = self.layout.margins().map(|margin| margin.max(inset));
         let result = crate::photo_size::image_group(
             paths,
-            [
-                self.layout.page_width - 2. * inset,
-                self.layout.page_height - 2. * inset,
-            ],
+            [self.layout.page_width - left - right, self.layout.page_height - top - bottom],
         );
         match result {
             Ok(group) => {
@@ -2664,12 +2619,11 @@ impl A4Studio {
                     .into_iter()
                     .enumerate()
                     .map(|(i, mut p)| {
-                        p.x += inset;
-                        p.y += inset;
+                        p.x += left;
+                        p.y += top;
                         (i, p)
                     })
                     .collect();
-                layout.margin = inset;
                 layout.width = width;
                 layout.height = height;
                 if let Err(error) = layout.trace_images(
@@ -2854,7 +2808,7 @@ impl A4Studio {
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.rulers, "Rulers");
-                    ui.checkbox(&mut self.snap_guides, "Snap to guides");
+                    ui.checkbox(&mut self.snap_guides, "Snap to guides and margins");
                     if ui
                         .add_enabled(
                             self.layout.guides.iter().any(|axis| !axis.is_empty()),
@@ -2950,7 +2904,7 @@ impl A4Studio {
                         ui.close_menu();
                     }
                 });
-                if ui.button("Quick guide").clicked() {
+                if icon_toggle(ui, Icon::Help, self.show_guide, "Quick guide") {
                     self.show_guide = true;
                 }
                 updates.menu(ui, ctx);
@@ -2960,34 +2914,34 @@ impl A4Studio {
     pub fn standard_toolbar(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         egui::TopBottomPanel::top("standard-toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if Self::tool_icon(ui, 6, false, "New project (Ctrl+N)") {
+                if icon_toggle(ui, Icon::New, false, "New project (Ctrl+N)") {
                     self.request_action(DocumentAction::New, ctx);
                 }
-                if Self::tool_icon(ui, 7, false, "Open project (Ctrl+Shift+O)") {
+                if icon_toggle(ui, Icon::Open, false, "Open project (Ctrl+Shift+O)") {
                     self.choose_project(ctx);
                 }
-                if Self::tool_icon(ui, 8, false, "Save project (Ctrl+S)") {
+                if icon_toggle(ui, Icon::Save, false, "Save project (Ctrl+S)") {
                     self.save_project(false);
                 }
                 ui.separator();
-                if Self::tool_icon(ui, 0, false, "Import image (Ctrl+O)") {
+                if icon_toggle(ui, Icon::Import, false, "Import image (Ctrl+O)") {
                     if self.show_back { self.import_back_image(); } else { self.choose_image(ctx); }
                 }
                 if ui
                     .add_enabled_ui(self.show_back || self.art.is_some(), |ui| {
-                        Self::tool_icon(ui, 10, false, "Add image")
+                        icon_toggle(ui, Icon::AddImage, false, "Add image")
                     })
                     .inner
                 {
                     if self.show_back { self.import_back_image(); } else { self.choose_add_image(ctx); }
                 }
-                if Self::tool_icon(ui, 2, self.show_print_dialog, "Print (Ctrl+P)") {
+                if icon_toggle(ui, Icon::Print, self.show_print_dialog, "Print (Ctrl+P)") {
                     self.print_back = self.show_back;
                     self.show_print_dialog = true;
                 }
                 if ui
                     .add_enabled_ui(self.can_export_cut(), |ui| {
-                        Self::tool_icon(ui, 11, false, "Export PLT")
+                        icon_toggle(ui, Icon::Export, false, "Export PLT")
                     })
                     .inner
                 {
@@ -2995,7 +2949,7 @@ impl A4Studio {
                 }
                 ui.separator();
                 for (index, (icon, label)) in
-                    [(9, "Artwork"), (1, "Size and Repeat"), (3, "Cut Outline")]
+                    [(Icon::Artwork, "Artwork"), (Icon::Settings, "Size and Repeat"), (Icon::Outline, "Cut Outline")]
                         .into_iter()
                         .enumerate()
                 {
@@ -3007,7 +2961,7 @@ impl A4Studio {
                             .position(|section| section.visible)
                             .unwrap_or(0)
                             == index;
-                    if Self::tool_icon(ui, icon, visible, label) {
+                    if icon_toggle(ui, icon, visible, label) {
                         self.open_sidebar_section(index);
                     }
                 }
@@ -3052,7 +3006,7 @@ impl A4Studio {
             if !self.show_print_dialog && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL,egui::Key::O)) { self.import_back_image(); }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL,egui::Key::P)) { self.print_back=true; self.show_print_dialog=true; }
             let paths=self.back_cut_paths();
-            self.back.ui(ctx,[self.layout.page_width,self.layout.page_height],&paths,self.unit);
+            self.back.ui(ctx, &self.layout, &paths, self.unit, self.show_margin_guides, self.snap_guides);
             if self.back.paste_requested { self.back.paste_requested=false; self.paste_image(ctx); }
             if self.back.print_requested {self.back.print_requested=false;self.print_back=true;self.show_print_dialog=true;}
             self.settings_dialog(ctx);
@@ -3282,7 +3236,7 @@ impl A4Studio {
                 if ui.small_button("+").on_hover_text("Zoom in").clicked() {
                     self.zoom = (self.zoom + 0.25).min(16.);
                 }
-                if ui.button("Fit page").clicked() {
+                if icon_button(ui, Icon::Fit, "Fit page") {
                     self.zoom = 1.;
                     self.canvas_pan = egui::Vec2::ZERO;
                 }
@@ -3305,26 +3259,26 @@ impl A4Studio {
                 ui.small("Tools");
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if Self::tool_icon(ui, 0, false, "Import image") {
+                    if icon_toggle(ui, Icon::Import, false, "Import image") {
                         self.choose_image(ctx);
                     }
-                    if Self::tool_icon(ui, 1, self.show_properties, "Properties sidebar") {
+                    if icon_toggle(ui, Icon::Settings, self.show_properties, "Properties sidebar") {
                         self.show_properties = true;
                     }
                 });
                 ui.horizontal(|ui| {
-                    if Self::tool_icon(ui, 2, self.show_print_dialog, "Print (Ctrl+P)") {
+                    if icon_toggle(ui, Icon::Print, self.show_print_dialog, "Print (Ctrl+P)") {
                         self.show_print_dialog = true;
                     }
-                    if Self::tool_icon(ui, 3, self.show_cut, "Show / hide cut outlines") {
+                    if icon_toggle(ui, Icon::Outline, self.show_cut, "Show / hide cut outlines") {
                         self.show_cut = !self.show_cut;
                     }
                 });
                 ui.horizontal(|ui| {
-                    if Self::tool_icon(ui, 4, self.grid, "Show / hide grid") {
+                    if icon_toggle(ui, Icon::Grid, self.grid, "Show / hide grid") {
                         self.grid = !self.grid;
                     }
-                    if Self::tool_icon(ui, 5, false, "Fit page") {
+                    if icon_toggle(ui, Icon::Fit, false, "Fit page") {
                         self.zoom = 1.;
                         self.canvas_pan = egui::Vec2::ZERO;
                     }
@@ -3334,27 +3288,23 @@ impl A4Studio {
                 let active = self.cut_draft.as_ref().map(|draft| draft.tool);
                 {
                     ui.horizontal(|ui| {
-                        if Self::tool_icon(ui, 12, active == Some(Tool::Pen), "Pen cut tool") {
+                        if icon_toggle(ui, Icon::Pen, active == Some(Tool::Pen), "Pen cut tool") {
                             self.activate_cut_tool(Tool::Pen);
                         }
-                        if Self::tool_icon(
-                            ui,
-                            13,
+                        if icon_toggle(ui, Icon::Ellipse,
                             active == Some(Tool::Ellipse),
                             "Circle / Ellipse cut tool",
                         ) {
                             self.activate_cut_tool(Tool::Ellipse);
                         }
                     });
-                    if Self::tool_icon(
-                        ui,
-                        14,
+                    if icon_toggle(ui, Icon::Rectangle,
                         active == Some(Tool::Rectangle),
                         "Rectangle / Rounded rectangle cut tool",
                     ) {
                         self.activate_cut_tool(Tool::Rectangle);
                     }
-                    if Self::tool_icon(ui, 15, self.pick_cut_shapes, "Select images and cut shapes")
+                    if icon_toggle(ui, Icon::Select, self.pick_cut_shapes, "Select images and cut shapes")
                     {
                         self.activate_cut_picker();
                     }
@@ -3426,7 +3376,7 @@ impl A4Studio {
                             ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
                         let painter = ui.painter_at(area);
 
-                        painter.rect_filled(area, 0., egui::Color32::from_rgb(225, 228, 233));
+                        painter.rect_filled(area, 0., crate::ui_theme::CANVAS);
 
                         let scale = ((viewport.x - 90.) / self.layout.page_width as f32)
                             .min((viewport.y - 80.) / self.layout.page_height as f32)
@@ -3466,8 +3416,11 @@ impl A4Studio {
                             egui::StrokeKind::Outside,
                         );
                         if self.show_margin_guides {
-                            let inset = self.layout.margin as f32 * scale;
-                            let guide = page.shrink(inset);
+                            let [[left, right], [top, bottom]] = self.layout.margin_lines();
+                            let guide = egui::Rect::from_min_max(
+                                page.min + egui::vec2(left as f32, top as f32) * scale,
+                                page.min + egui::vec2(right as f32, bottom as f32) * scale,
+                            );
                             if guide.is_positive() {
                                 painter.rect_stroke(
                                     guide,
@@ -3716,6 +3669,18 @@ impl A4Studio {
 
 #[cfg(test)]
 mod selection_tests {
+    #[test]
+    fn asymmetric_margins_snap_image_edges_without_ruler_guides() {
+        let mut app = super::A4Studio::default();
+        app.layout.page_margins = Some([12., 23., 28., 33.]);
+        let members = [(0, sheet::Placement { x: 15., y: 31., width: 20., height: 30. })];
+        assert_eq!(app.snap_move(&members, (-2., -2.), 6., None), (-3., -3.));
+        assert_eq!(app.snap_move(&members, (151., 202.), 6., None), (152., 203.));
+        assert_eq!(app.snap_move(&members, (-2., 0.), 6., Some(0)), (-3., 0.));
+        app.snap_guides = false;
+        assert_eq!(app.snap_move(&members, (-2., -2.), 6., None), (-2., -2.));
+    }
+
     #[test]
     fn close_requested_while_opening_is_handled_after_loading() {
         let ctx=egui::Context::default();let path=project_test_path("async-close-open");
@@ -4857,11 +4822,11 @@ impl A4Studio {
                     .unwrap_or(0);
                 ui.horizontal_wrapped(|ui| {
                     for (index, (icon, label)) in
-                        [(9, "Artwork"), (1, "Size and Repeat"), (3, "Cut Outline")]
+                        [(Icon::Artwork, "Artwork"), (Icon::Settings, "Size and Repeat"), (Icon::Outline, "Cut Outline")]
                             .into_iter()
                             .enumerate()
                     {
-                        if Self::tool_icon(ui, icon, index == active, label) {
+                        if icon_toggle(ui, icon, index == active, label) {
                             self.open_sidebar_section(index);
                         }
                     }
@@ -5120,33 +5085,23 @@ impl A4Studio {
     }
 
     fn artwork_dialog_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.add_space(4.);
-
-        if ui
-            .add_sized(
-                [ui.available_width(), 30.],
-                egui::Button::new("Import image..."),
-            )
-            .clicked()
-        {
-            self.choose_image(ctx);
-        }
-
-        if ui
-            .add_enabled(!self.source.is_empty(), egui::Button::new("Close image"))
-            .clicked()
-        {
-            self.request_action(DocumentAction::CloseImage, ctx);
-        }
-        if self.art.is_none() {
-            if ui.button("Load sample artwork").clicked() {
+        ui.horizontal(|ui| {
+            if icon_button(ui, Icon::Import, "Import image (Ctrl+O)") {
+                self.choose_image(ctx);
+            }
+            if ui.add_enabled_ui(!self.source.is_empty(), |ui| {
+                icon_button(ui, Icon::Close, "Close image")
+            }).inner {
+                self.request_action(DocumentAction::CloseImage, ctx);
+            }
+            if self.art.is_none() && icon_button(ui, Icon::Artwork, "Load sample artwork") {
                 self.source = include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
                 self.name = "Sample sticker".into();
                 self.retrace(ctx);
                 self.ratio = 1.;
                 self.layout.height = self.layout.width;
             }
-        }
+        });
 
         ui.add(egui::Label::new(egui::RichText::new(&self.name).small().weak()).truncate())
             .on_hover_text(&self.name);
@@ -5205,7 +5160,7 @@ impl A4Studio {
         });
         if !self.layout.custom.is_empty()
             && self.layout.image_tiles.is_empty()
-            && ui.button("Reflow copies").clicked()
+            && icon_button(ui, Icon::Grid, "Reflow copies")
         {
             self.reflow();
         }
@@ -5295,14 +5250,7 @@ impl A4Studio {
                 );
                 ui.end_row();
 
-                ui.label("Page margin");
-                ui.add(
-                    self.unit
-                        .distance(&mut self.layout.margin)
-                        .speed(0.1)
-                        .range(10.0..=60.),
-                );
-                ui.end_row();
+                self.edit_margin_fields(ui);
             });
         if let (Some((index, original)), Some(p)) = (selected, size) {
             if width_changed || height_changed {
@@ -5314,12 +5262,9 @@ impl A4Studio {
         if self.layout.image_tiles.is_empty()
             && let Ok(capacity) = self.cached_capacity()
         {
-            if ui
-                .add_enabled(
-                    capacity > 0,
-                    egui::Button::new(format!("Fill sheet ({capacity})")),
-                )
-                .clicked()
+            if ui.add_enabled_ui(capacity > 0, |ui| {
+                icon_button(ui, Icon::AddImage, &format!("Fill sheet ({capacity} copies)"))
+            }).inner
             {
                 self.layout.count = capacity;
             }
@@ -5329,30 +5274,24 @@ impl A4Studio {
         ui.add_space(4.);
         ui.strong("Manual cut tools");
         ui.horizontal(|ui| {
-            if ui.button("Select shape").clicked() {
+            if icon_button(ui, Icon::Select, "Select cut shape") {
                 self.activate_cut_picker();
             }
-            if ui
-                .add_enabled(
-                    self.selected_cut_shape.is_some(),
-                    egui::Button::new("Delete shape"),
-                )
-                .clicked()
+            if ui.add_enabled_ui(self.selected_cut_shape.is_some(), |ui| {
+                icon_button(ui, Icon::Delete, "Delete selected cut shape")
+            }).inner
             {
                 self.remove_selected_cut_shape();
             }
         });
         let active = self.cut_draft.as_ref().map(|draft| draft.tool);
         ui.horizontal_wrapped(|ui| {
-            for (tool, label) in [
-                (Tool::Pen, "Pen"),
-                (Tool::Ellipse, "Circle / Ellipse"),
-                (Tool::Rectangle, "Rectangle"),
+            for (tool, icon, label) in [
+                (Tool::Pen, Icon::Pen, "Pen"),
+                (Tool::Ellipse, Icon::Ellipse, "Circle / Ellipse"),
+                (Tool::Rectangle, Icon::Rectangle, "Rectangle"),
             ] {
-                let button = egui::Button::new(label)
-                    .selected(active == Some(tool))
-                    .corner_radius(crate::ui_theme::BUTTON_RADIUS);
-                if ui.add(button).clicked() {
+                if icon_toggle(ui, icon, active == Some(tool), label) {
                     self.activate_cut_tool(tool);
                 }
             }
@@ -5364,15 +5303,15 @@ impl A4Studio {
                 Tool::Pen => {
                     ui.small("Click for a corner; drag an anchor for a curve.");
                     ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .add_enabled(count >= 2, egui::Button::new("Finish open"))
-                            .clicked()
+                        if ui.add_enabled_ui(count >= 2, |ui| {
+                            icon_button(ui, Icon::OpenPath, "Finish open")
+                        }).inner
                         {
                             self.finish_manual_cut(false);
                         }
-                        if ui
-                            .add_enabled(count >= 3, egui::Button::new("Close path"))
-                            .clicked()
+                        if ui.add_enabled_ui(count >= 3, |ui| {
+                            icon_button(ui, Icon::ClosedPath, "Close path")
+                        }).inner
                         {
                             self.finish_manual_cut(true);
                         }
@@ -5394,15 +5333,12 @@ impl A4Studio {
                     ui.small("Drag to draw. Hold Shift for a square.");
                 }
             }
-            if ui.button("Cancel").clicked() {
+            if icon_button(ui, Icon::Close, "Cancel drawing") {
                 self.cut_draft = None;
             }
-        } else if ui
-            .add_enabled(
-                !self.layout.manual_cut_paths.is_empty(),
-                egui::Button::new("Remove last"),
-            )
-            .clicked()
+        } else if ui.add_enabled_ui(!self.layout.manual_cut_paths.is_empty(), |ui| {
+            icon_button(ui, Icon::Undo, "Remove last cut path")
+        }).inner
         {
             self.record_manual_cut_edit();
             self.layout.manual_cut_paths.pop();

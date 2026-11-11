@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use crate::ui_theme::{Icon, icon_button};
+
 use eframe::egui;
 
 use mc630_plt_studio::{Drawing, Settings};
@@ -679,7 +681,7 @@ impl Studio {
                             });
                             ui.separator();
                         }
-                        new = ui.add_enabled(!busy, egui::Button::new("+ New")).clicked();
+                        new = ui.add_enabled_ui(!busy, |ui| icon_button(ui, Icon::New, "New document (Ctrl+N)")).inner;
                     });
                 });
         });
@@ -827,8 +829,9 @@ impl eframe::App for Studio {
             }
             if self.empty_workspace {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.centered_and_justified(|ui| {
-                        if ui.button("+ New document").clicked() {
+                    let button = egui::Rect::from_center_size(ui.max_rect().center(), egui::vec2(32., 32.));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
+                        if icon_button(ui, Icon::New, "New document (Ctrl+N)") {
                             self.a4.workspace_action = Some(a4_ui::WorkspaceAction::New);
                         }
                     });
@@ -853,7 +856,7 @@ impl eframe::App for Studio {
 
         egui::TopBottomPanel::top("vector-file-menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                if ui.button("Print & Cut workspace").clicked() {
+                if icon_button(ui, Icon::Outline, "Return to Print & Cut workspace") {
                     self.a4_mode = true;
                 }
                 ui.menu_button("File", |ui| {
@@ -879,9 +882,9 @@ impl eframe::App for Studio {
         self.a4.settings_dialog(ctx);
         egui::SidePanel::left("tools").exact_width(300.).show(ctx,|ui|{
 
-            ui.add_space(12.);if ui.button("Open SVG / PLT...").clicked(){if let Some(p)=rfd::FileDialog::new().add_filter("Vector designs",&["svg","plt"]).pick_file(){self.load(p);}}
+            ui.add_space(12.);if icon_button(ui, Icon::Open, "Open SVG / PLT"){if let Some(p)=rfd::FileDialog::new().add_filter("Vector designs",&["svg","plt"]).pick_file(){self.load(p);}}
 
-            if ui.button("New 10 mm test square").clicked(){self.drawing=Drawing::square();self.settings.width=10.;self.settings.height=10.;self.name="10 mm calibration square".into();}
+            if icon_button(ui, Icon::Rectangle, "New 10 mm test square"){self.drawing=Drawing::square();self.settings.width=10.;self.settings.height=10.;self.name="10 mm calibration square".into();}
 
             ui.add_space(12.);ui.strong(&self.name);ui.label(format!("{} paths · {} points",self.drawing.paths.len(),self.drawing.paths.iter().map(Vec::len).sum::<usize>()));ui.separator();
 
@@ -899,7 +902,7 @@ impl eframe::App for Studio {
 
             ui.separator();ui.label("Calibration: plotter units per mm");ui.add(egui::DragValue::new(&mut self.settings.units).speed(0.1).range(1.0..=1000.));ui.small("40 is an initial assumption. Export the 10 mm square and measure it before production. For PLT import, set this value before opening.");
 
-            ui.add_space(12.);if ui.add_sized([270.,36.],egui::Button::new("Export PLT...")).clicked(){match mc630_plt_studio::export(&self.drawing,&self.settings){Ok(text)=>{if let Some(p)=rfd::FileDialog::new().add_filter("Plotter file",&["plt"]).set_file_name("CUT001.plt").save_file(){let p=if p.extension().is_none(){p.with_extension("plt")}else{p};self.status=match std::fs::write(&p,text){Ok(())=>format!("Saved: {}",p.display()),Err(e)=>format!("Save failed: {e}")};}},Err(e)=>self.status=e}}
+            ui.add_space(12.);if icon_button(ui, Icon::Export, "Export PLT"){match mc630_plt_studio::export(&self.drawing,&self.settings){Ok(text)=>{if let Some(p)=rfd::FileDialog::new().add_filter("Plotter file",&["plt"]).set_file_name("CUT001.plt").save_file(){let p=if p.extension().is_none(){p.with_extension("plt")}else{p};self.status=match std::fs::write(&p,text){Ok(())=>format!("Saved: {}",p.display()),Err(e)=>format!("Save failed: {e}")};}},Err(e)=>self.status=e}}
 
             ui.add_space(12.);ui.small("Profile matches supplied PLT structure: TB25,...;CT1;PA;PU/PD;!PG; The TB/CT values are retained as a compatibility template; their firmware-specific meaning is unverified.");
 

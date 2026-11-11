@@ -1,5 +1,7 @@
 //! Windows driver DEVMODE preferences are kept intact for CreateDC/StartDoc.
 
+use crate::ui_theme::{Icon, icon_button};
+
 use image::RgbaImage;
 
 use std::{
@@ -629,10 +631,25 @@ impl PrintPanel {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut eframe::egui::Ui, art: Option<&mc630_plt_studio::sheet::Artwork>, layout: &mc630_plt_studio::sheet::Layout, ccd: Option<&mc630_plt_studio::sheet::CcdTrial>, status: &mut String) {
+    pub fn ui(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        art: Option<&mc630_plt_studio::sheet::Artwork>,
+        layout: &mc630_plt_studio::sheet::Layout,
+        ccd: Option<&mc630_plt_studio::sheet::CcdTrial>,
+        status: &mut String,
+    ) {
         self.ui_with_raster(ui, art, layout, ccd, status, None);
     }
-    pub fn ui_with_raster(&mut self, ui: &mut eframe::egui::Ui, art: Option<&mc630_plt_studio::sheet::Artwork>, layout: &mc630_plt_studio::sheet::Layout, ccd: Option<&mc630_plt_studio::sheet::CcdTrial>, status: &mut String, raster: Option<&dyn Fn() -> Result<RgbaImage,String>>) {
+    pub fn ui_with_raster(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        art: Option<&mc630_plt_studio::sheet::Artwork>,
+        layout: &mc630_plt_studio::sheet::Layout,
+        ccd: Option<&mc630_plt_studio::sheet::CcdTrial>,
+        status: &mut String,
+        raster: Option<&dyn Fn() -> Result<RgbaImage, String>>,
+    ) {
         use eframe::egui;
 
         if let Some(rx) = &self.discovery {
@@ -687,13 +704,13 @@ impl PrintPanel {
             }
 
             ui.horizontal(|ui| {
-                if ui.button("Refresh").clicked() {
+                if icon_button(ui, Icon::Refresh, "Refresh printer list") {
                     if self.discovery.is_none() {
                         self.discovery = Some(discover_printers());
                     }
                 }
 
-                if ui.button("Printing Preferences…").clicked() {
+                if icon_button(ui, Icon::Settings, "Printing preferences") {
                     let result = (|| {
                         self.prepare()?;
                         let p = self.preferences.as_mut().unwrap();
@@ -721,13 +738,11 @@ impl PrintPanel {
                 ));
             }
 
+            let can_print = (raster.is_some() || art.is_some() && layout.has_visible_images())
+                && !self.selected.is_empty();
             if ui
-                .add_enabled(
-                    (raster.is_some() || art.is_some() && layout.has_visible_images()) && !self.selected.is_empty(),
-                    egui::Button::new("Print sheet")
-                        .min_size(egui::vec2(ui.available_width(), 32.)),
-                )
-                .clicked()
+                .add_enabled_ui(can_print, |ui| icon_button(ui, Icon::Print, "Print sheet"))
+                .inner
             {
                 let result = (|| {
                     self.prepare()?;
@@ -735,7 +750,11 @@ impl PrintPanel {
                     let driver = self.preferences.as_ref().unwrap().dc()?;
                     let (w, h, _, _) = page_geometry(driver.0)?;
                     validate_page_size([w, h], page)?;
-                    let raster = if let Some(render) = raster { render()? } else { layout.print_raster(art.unwrap(), ccd)? };
+                    let raster = if let Some(render) = raster {
+                        render()?
+                    } else {
+                        layout.print_raster(art.unwrap(), ccd)?
+                    };
                     let p = self.preferences.as_ref().unwrap().clone();
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {

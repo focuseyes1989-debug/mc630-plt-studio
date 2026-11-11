@@ -1,3 +1,4 @@
+use crate::ui_theme::{Icon, icon_button};
 use base64::Engine as _;
 use eframe::egui;
 use image::{RgbaImage, imageops};
@@ -536,10 +537,13 @@ impl BackEditor {
     pub fn ui(
         &mut self,
         ctx: &egui::Context,
-        page: [f64; 2],
+        layout: &mc630_plt_studio::sheet::Layout,
         paths: &[Vec<[f64; 2]>],
         unit: crate::preferences::Unit,
+        show_margins: bool,
+        snap_margins: bool,
     ) {
+        let page = [layout.page_width, layout.page_height];
         egui::SidePanel::right("back-properties")
             .exact_width(275.)
             .show(ctx, |ui| {
@@ -574,19 +578,22 @@ impl BackEditor {
                         }
                     }
                     ui.separator();
-                    if ui.button("Import back image…").clicked() {
-                        self.import(page, paths);
-                    }
-                    if ui.button("Paste image · Ctrl+V").clicked() {
-                        self.paste_requested = true;
-                    }
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy").clicked() {
-                            self.copy_selected();
+                    ui.horizontal_wrapped(|ui| {
+                        if icon_button(ui, Icon::Import, "Import back image") {
+                            self.import(page, paths);
                         }
-                        if ui.button("Duplicate").clicked() {
-                            self.duplicate_selected(page);
+                        if icon_button(ui, Icon::Paste, "Paste image (Ctrl+V)") {
+                            self.paste_requested = true;
                         }
+                        ui.add_enabled_ui(self.selected.is_some(), |ui| {
+                            if icon_button(ui, Icon::Copy, "Copy selected image (Ctrl+C)") {
+                                self.copy_selected();
+                            }
+                            if icon_button(ui, Icon::Duplicate, "Duplicate selected image (Ctrl+D)")
+                            {
+                                self.duplicate_selected(page);
+                            }
+                        });
                     });
                     let mut remove = false;
                     for (i, image) in self.data.images.iter().enumerate() {
@@ -646,13 +653,13 @@ impl BackEditor {
                             );
                         });
                         ui.horizontal(|ui| {
-                            if ui.button("↶ 90°").clicked() {
+                            if icon_button(ui, Icon::RotateLeft, "Rotate 90° counterclockwise") {
                                 item.angle = (item.angle - 90.).rem_euclid(360.);
                             }
-                            if ui.button("↷ 90°").clicked() {
+                            if icon_button(ui, Icon::RotateRight, "Rotate 90° clockwise") {
                                 item.angle = (item.angle + 90.).rem_euclid(360.);
                             }
-                            if ui.button("Reset").clicked() {
+                            if icon_button(ui, Icon::Refresh, "Reset rotation and flips") {
                                 item.angle = 0.;
                                 item.flip_x = false;
                                 item.flip_y = false;
@@ -663,11 +670,11 @@ impl BackEditor {
                             ui.checkbox(&mut item.flip_y, "Flip V");
                         });
                         item.constrain_position(page);
-                        if ui.button("Fit to cut contour").clicked() {
+                        if icon_button(ui, Icon::Fit, "Fit image to cut contour") {
                             item.angle = 0.;
                             item.rect = fit;
                         }
-                        if ui.button("Delete image").clicked() {
+                        if icon_button(ui, Icon::Delete, "Delete selected image (Delete)") {
                             remove = true;
                         }
                     }
@@ -692,24 +699,26 @@ impl BackEditor {
                                 .speed(0.1),
                         );
                     });
-                    if ui.button("Print back…").clicked() {
-                        self.print_requested = true;
-                    }
-                    if ui.button("Export back PNG…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("PNG", &["png"])
-                            .set_file_name("BACK.png")
-                            .save_file()
-                        {
-                            self.message = match self.data.raster(page).and_then(|r| {
-                                r.save_with_format(p, image::ImageFormat::Png)
-                                    .map_err(|e| e.to_string())
-                            }) {
-                                Ok(()) => "Back PNG saved.".into(),
-                                Err(e) => e,
-                            };
+                    ui.horizontal(|ui| {
+                        if icon_button(ui, Icon::Print, "Print back") {
+                            self.print_requested = true;
                         }
-                    }
+                        if icon_button(ui, Icon::Export, "Export back PNG") {
+                            if let Some(p) = rfd::FileDialog::new()
+                                .add_filter("PNG", &["png"])
+                                .set_file_name("BACK.png")
+                                .save_file()
+                            {
+                                self.message = match self.data.raster(page).and_then(|r| {
+                                    r.save_with_format(p, image::ImageFormat::Png)
+                                        .map_err(|e| e.to_string())
+                                }) {
+                                    Ok(()) => "Back PNG saved.".into(),
+                                    Err(e) => e,
+                                };
+                            }
+                        }
+                    });
                     if !self.message.is_empty() {
                         ui.label(&self.message);
                     }
@@ -745,6 +754,14 @@ impl BackEditor {
                 }
             }
         }
+        let mut margins = layout.margin_lines();
+        let flip_axis = if self.data.flip == Flip::LeftRight {
+            0
+        } else {
+            1
+        };
+        let [start, end] = margins[flip_axis];
+        margins[flip_axis] = [page[flip_axis] - end, page[flip_axis] - start];
         egui::CentralPanel::default().show(ctx, |ui| {
             let available = ui.available_size() - egui::vec2(40., 40.);
             let scale = (available.x / page[0] as f32)
@@ -757,6 +774,18 @@ impl BackEditor {
             ui.painter().rect_filled(paper, 0., egui::Color32::WHITE);
             let point =
                 |p: [f64; 2]| paper.min + egui::vec2(p[0] as f32 * scale, p[1] as f32 * scale);
+            if show_margins {
+                let [[left, right], [top, bottom]] = margins;
+                let guide = egui::Rect::from_min_max(point([left, top]), point([right, bottom]));
+                if guide.is_positive() {
+                    ui.painter().rect_stroke(
+                        guide,
+                        0.,
+                        egui::Stroke::new(0.7_f32, egui::Color32::from_rgb(174, 126, 174)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
             let pointer = ctx.pointer_interact_pos();
             let mut begin = None;
             for (i, item) in self.data.images.iter().enumerate() {
@@ -883,11 +912,30 @@ impl BackEditor {
                                     item.rect = resized.rect;
                                 }
                             } else {
-                                if ctx.input(|i| i.modifiers.shift) {
-                                    if delta[0].abs() > delta[1].abs() {
-                                        delta[1] = 0.;
-                                    } else {
-                                        delta[0] = 0.;
+                                let locked_axis = ctx
+                                    .input(|i| i.modifiers.shift)
+                                    .then(|| usize::from(delta[0].abs() > delta[1].abs()));
+                                let bounds = start.bounds();
+                                for (axis, movement) in delta.iter_mut().enumerate() {
+                                    if locked_axis == Some(axis) {
+                                        *movement = 0.;
+                                        continue;
+                                    }
+                                    if snap_margins {
+                                        let correction = self.data.offset[axis];
+                                        let shifts = [
+                                            margins[axis][0]
+                                                - (bounds[axis] + *movement + correction),
+                                            margins[axis][1]
+                                                - (bounds[axis + 2] + *movement + correction),
+                                        ];
+                                        let shift = shifts
+                                            .into_iter()
+                                            .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+                                            .unwrap();
+                                        if shift.abs() <= 6. / f64::from(scale) {
+                                            *movement += shift;
+                                        }
                                     }
                                 }
                                 item.rect[0] = start.rect[0] + delta[0];
@@ -1223,15 +1271,24 @@ pub(crate) mod tests {
         let ctx = egui::Context::default();
         let mut editor = BackEditor::default();
         let _ = ctx.run(Default::default(), |ctx| {
-            editor.ui(ctx, [210., 297.], &[], crate::preferences::Unit::Mm)
+            editor.ui(
+                ctx,
+                &Default::default(),
+                &[],
+                crate::preferences::Unit::Mm,
+                true,
+                true,
+            )
         });
         editor.data.images.push(image_item());
         let _ = ctx.run(Default::default(), |ctx| {
             editor.ui(
                 ctx,
-                [210., 297.],
+                &Default::default(),
                 &[vec![[30., 40.], [50., 40.], [50., 50.], [30., 40.]]],
                 crate::preferences::Unit::Mm,
+                true,
+                true,
             )
         });
         assert_eq!(editor.textures.len(), 1);

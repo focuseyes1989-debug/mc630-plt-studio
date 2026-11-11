@@ -35,7 +35,7 @@ impl A4Studio {
     }
     fn execute_action(&mut self, action: DocumentAction, ctx: &egui::Context) {
         match action {
-            DocumentAction::New => self.show_new = true,
+            DocumentAction::New => self.show_new_tab_dialog(),
             DocumentAction::OpenImage(path) => self.load(path, ctx),
             DocumentAction::OpenImageGroup(paths) => self.load_image_group(&paths, ctx),
             DocumentAction::OpenProject(path) => self.load_project(path, ctx),
@@ -168,7 +168,10 @@ impl A4Studio {
         self.io_job=Some(crate::project_io::Job::open(path));
         true
     }
-    pub fn show_new_tab_dialog(&mut self) { self.show_new = true; }
+    pub fn show_new_tab_dialog(&mut self) {
+        self.new_margins = self.layout.margins();
+        self.show_new = true;
+    }
     pub fn same_project(&self, path: &std::path::Path) -> bool {
         self.project_path.as_ref().is_some_and(|p| p.to_string_lossy().eq_ignore_ascii_case(&path.to_string_lossy()))
     }

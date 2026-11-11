@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt::Write};
 #[derive(Default)]
 pub struct OutlineCache {
     artwork: Option<u64>,
-    entries: HashMap<[u64; 16], Result<Vec<Vec<Point>>, String>>,
+    entries: HashMap<[u64; 19], Result<Vec<Vec<Point>>, String>>,
 }
 impl OutlineCache {
     fn prepare(&mut self, art: &Artwork) {
@@ -213,7 +213,6 @@ fn write_plt_path(out: &mut String, path: &[Point], units: f64, transpose: bool)
     }
 }
 pub struct Artwork {
-    pub png: Vec<u8>,
     pub pixels: RgbaImage,
     pub outlines: Vec<Vec<Point>>,
     pub holes: Vec<Vec<Point>>,
@@ -334,12 +333,7 @@ fn trace_artwork(
     } else {
         trace(&thumb)?
     };
-    let mut png = std::io::Cursor::new(Vec::new());
-    pixels
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
     Ok(Artwork {
-        png: png.into_inner(),
         pixels,
         outlines,
         holes,
@@ -855,6 +849,9 @@ pub struct Layout {
     #[serde(default)]
     pub use_manual_cut_paths: bool,
     pub margin: f64,
+    /// Left, right, top and bottom margins in millimetres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_margins: Option<[f64; 4]>,
     pub count: usize,
     pub units: f64,
     pub offset_x: f64,
@@ -886,6 +883,7 @@ impl Default for Layout {
             manual_cut_paths: vec![],
             use_manual_cut_paths: false,
             margin: 15.,
+            page_margins: None,
             count: 20,
             units: 40.,
             offset_x: 0.,
@@ -896,6 +894,27 @@ impl Default for Layout {
     }
 }
 impl Layout {
+    pub fn margins(&self) -> [f64; 4] {
+        self.page_margins.unwrap_or([self.margin; 4])
+    }
+
+    pub fn margin_lines(&self) -> [[f64; 2]; 2] {
+        let [left, right, top, bottom] = self.margins();
+        [
+            [left, self.page_width - right],
+            [top, self.page_height - bottom],
+        ]
+    }
+
+    pub fn margins_fit(margins: [f64; 4], width: f64, height: f64) -> bool {
+        let [left, right, top, bottom] = margins;
+        margins
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.)
+            && width - left - right >= 1.
+            && height - top - bottom >= 1.
+    }
+
     pub fn validate_manual_cut_paths(&self) -> Result<(), String> {
         if self.manual_cut_paths.len() > 100
             || self.manual_cut_paths.iter().map(Vec::len).sum::<usize>() > 10_000
@@ -1261,24 +1280,30 @@ impl Layout {
             || self.height < 1.
             || self.column_gap < 0.
             || self.row_gap < 0.
-            || self.margin < 5.
+            || (self.page_margins.is_none() && self.margin < 5.)
             || self.units <= 0.
             || self.units > 1000.
         {
             return Err("Invalid layout values. Margin must be at least 5 mm.".into());
         }
-        let cols = ((self.page_width - 2. * self.margin + self.column_gap)
+        let [left, right, top, bottom] = self.margins();
+        if self.page_margins.is_some()
+            && !Self::margins_fit(self.margins(), self.page_width, self.page_height)
+        {
+            return Err("Margins must leave at least 1 mm of usable width and height.".into());
+        }
+        let cols = ((self.page_width - left - right + self.column_gap)
             / (self.width + self.column_gap))
             .floor()
             .max(0.) as usize;
-        let rows = ((self.page_height - 2. * self.margin + self.row_gap)
-            / (self.height + self.row_gap))
+        let rows = ((self.page_height - top - bottom + self.row_gap) / (self.height + self.row_gap))
             .floor()
             .max(0.) as usize;
         Ok((cols, rows))
     }
     fn resolved_items(&self, fill: bool) -> Result<Vec<Placement>, String> {
         let (cols, rows) = self.capacity()?;
+        let [left, right, top, bottom] = self.margins();
         let nominal = cols * rows;
         if self.count == 0 || self.count > 1000 {
             return Err("Copies must be between 1 and 1000.".into());
@@ -1293,8 +1318,8 @@ impl Layout {
             let count = if fill { nominal.min(1000) } else { self.count };
             return Ok((0..count)
                 .map(|i| Placement {
-                    x: self.margin + (i % cols) as f64 * (self.width + self.column_gap),
-                    y: self.margin + (i / cols) as f64 * (self.height + self.row_gap),
+                    x: left + (i % cols) as f64 * (self.width + self.column_gap),
+                    y: top + (i / cols) as f64 * (self.height + self.row_gap),
                     width: self.width,
                     height: self.height,
                 })
@@ -1324,8 +1349,8 @@ impl Layout {
                 Some(*p)
             } else if i < nominal && !(prefix && last.is_some_and(|last| i > last)) {
                 Some(Placement {
-                    x: self.margin + (i % cols) as f64 * (self.width + self.column_gap),
-                    y: self.margin + (i / cols) as f64 * (self.height + self.row_gap),
+                    x: left + (i % cols) as f64 * (self.width + self.column_gap),
+                    y: top + (i / cols) as f64 * (self.height + self.row_gap),
                     width: self.width,
                     height: self.height,
                 })
@@ -1354,8 +1379,8 @@ impl Layout {
                 continue;
             }
             let occupied: Vec<_> = slots.iter().filter_map(|p| *p).collect();
-            let mut xs = vec![self.margin];
-            let mut ys = vec![self.margin];
+            let mut xs = vec![left];
+            let mut ys = vec![top];
             for p in &occupied {
                 xs.extend([p.x, p.x + p.width + self.column_gap]);
                 ys.extend([p.y, p.y + p.height + self.row_gap]);
@@ -1367,16 +1392,10 @@ impl Layout {
             let mut found = None;
             'search: for y in ys {
                 for &x in &xs {
-                    if x < self
-                        .margin
-                        .min(occupied.iter().map(|p| p.x).fold(self.margin, f64::min))
-                        - 1e-8
-                        || y < self
-                            .margin
-                            .min(occupied.iter().map(|p| p.y).fold(self.margin, f64::min))
-                            - 1e-8
-                        || x + prototype.width > self.page_width - self.margin + 1e-8
-                        || y + prototype.height > self.page_height - self.margin + 1e-8
+                    if x < left.min(occupied.iter().map(|p| p.x).fold(left, f64::min)) - 1e-8
+                        || y < top.min(occupied.iter().map(|p| p.y).fold(top, f64::min)) - 1e-8
+                        || x + prototype.width > self.page_width - right + 1e-8
+                        || y + prototype.height > self.page_height - bottom + 1e-8
                     {
                         continue;
                     }
@@ -1444,6 +1463,7 @@ impl Layout {
                 continue;
             }
             // Position is deliberately excluded; validation-affecting settings are retained.
+            let [left, right, top, bottom] = self.margins();
             let key = [
                 item.width.to_bits(),
                 item.height.to_bits(),
@@ -1454,7 +1474,10 @@ impl Layout {
                 self.count as u64,
                 self.page_width.to_bits(),
                 self.page_height.to_bits(),
-                self.margin.to_bits(),
+                left.to_bits(),
+                right.to_bits(),
+                top.to_bits(),
+                bottom.to_bits(),
                 self.column_gap.to_bits(),
                 self.row_gap.to_bits(),
                 self.units.to_bits(),
@@ -1559,7 +1582,7 @@ impl Layout {
         if !self.has_visible_images() {
             return Err("Show at least one image before printing or exporting.".into());
         }
-        let data = base64::engine::general_purpose::STANDARD.encode(&a.png);
+        let mut encoded_images = HashMap::new();
         let mut s = String::from(
             "<!doctype html><html><head><meta charset=\"utf-8\"><title>A4 Sticker Print</title><style>@page{size:A4 portrait;margin:0}*{box-sizing:border-box}body{margin:0;background:#ddd;font:16px sans-serif}.toolbar{padding:16px;background:#fff}.page{width:210mm;height:297mm;background:white;margin:15px auto}svg{display:block;width:210mm;height:297mm}@media print{.toolbar{display:none}body{background:white}.page{margin:0;break-after:avoid}}</style></head><body><div class=\"toolbar\"><button onclick=\"window.print()\">Print A4</button> A4 portrait / Scale 100% (Actual size) / Margins None / Headers and footers Off. Disable Fit to page. Printed crosses are manual alignment references only.</div><div class=\"page\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"210mm\" height=\"297mm\" viewBox=\"0 0 210 297\">",
         );
@@ -1568,12 +1591,18 @@ impl Layout {
             if self.hidden_images.contains(&i) {
                 continue;
             }
-            let tile_data;
-            let data = if a.tiles.is_empty() {
-                &data
-            } else {
-                tile_data = base64::engine::general_purpose::STANDARD.encode(&a.at(i).png);
-                &tile_data
+            let image = a.at(i);
+            let key = std::ptr::from_ref(image);
+            let data = match encoded_images.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut png = std::io::Cursor::new(Vec::new());
+                    image
+                        .pixels
+                        .write_to(&mut png, image::ImageFormat::Png)
+                        .map_err(|error| format!("Cannot encode print image: {error}"))?;
+                    entry.insert(base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
+                }
             };
             write!(s,"<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"/>",p.x,p.y,p.width,p.height,data).unwrap();
         }
@@ -1613,6 +1642,59 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn html_export_embeds_the_processed_pixels_for_visible_tiles() {
+        let mut art = sample();
+        let mut first = sample();
+        first.pixels.put_pixel(0, 0, image::Rgba([1, 2, 3, 0]));
+        let first = std::sync::Arc::new(first);
+        let second = std::sync::Arc::new(sample());
+        art.tiles = vec![first.clone(), second, first.clone()];
+        let mut layout = Layout {
+            count: 3,
+            ..Layout::default()
+        };
+        layout.hidden_images.insert(1);
+        let html = layout.print_html(&art).unwrap();
+        let images: Vec<_> = html.split("data:image/png;base64,").skip(1).collect();
+        assert_eq!(images.len(), 2);
+        for image in images {
+            let encoded = image.split_once('"').unwrap().0;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            assert_eq!(
+                image::load_from_memory(&bytes).unwrap().into_rgba8(),
+                first.pixels
+            );
+        }
+    }
+
+    #[test]
+    fn per_edge_margins_round_trip_and_set_grid_origin_and_capacity() {
+        let mut layout = Layout {
+            count: 2,
+            ..Layout::default()
+        };
+        let legacy: Layout =
+            serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
+        assert_eq!(legacy.margins(), [15.; 4]);
+        layout.page_margins = Some([10., 100., 25., 70.]);
+        let restored: Layout =
+            serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
+        assert_eq!(restored.margins(), [10., 100., 25., 70.]);
+        assert_eq!(restored.capacity().unwrap(), (2, 5));
+        assert_eq!(
+            (
+                restored.items().unwrap()[0].x,
+                restored.items().unwrap()[0].y
+            ),
+            (10., 25.)
+        );
+        layout.page_margins = Some([110., 100., 25., 70.]);
+        assert!(layout.capacity().is_err());
+    }
+
     #[test]
     fn manual_cut_line_replaces_auto_trace_in_preview_and_plt() {
         let art = sample();
@@ -1705,7 +1787,6 @@ mod tests {
         }
         let (outlines, holes) = trace(&im).unwrap();
         Artwork {
-            png: vec![],
             pixels: im,
             outlines,
             holes,
@@ -2102,7 +2183,6 @@ mod tests {
     }
     fn rectangular_art() -> Artwork {
         Artwork {
-            png: vec![],
             pixels: RgbaImage::new(10, 10),
             outlines: vec![vec![[0., 0.], [1., 0.], [1., 1.], [0., 1.], [0., 0.]]],
             holes: vec![],
@@ -2650,7 +2730,6 @@ mod tests {
         assert_eq!(holes.len(), 1);
         let a = Artwork {
             pixels: im,
-            png: vec![],
             outlines,
             holes,
             tiles: vec![],
