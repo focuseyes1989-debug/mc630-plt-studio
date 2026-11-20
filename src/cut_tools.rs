@@ -41,29 +41,45 @@ pub enum Tool {
     Rectangle,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Anchor {
     pub point: Point,
     pub tangent: Point,
+    pub break_outgoing: bool,
 }
 
 pub struct Draft {
     pub tool: Tool,
     pub anchors: Vec<Anchor>,
     pub drag_start: Option<Point>,
+    preview_cache: Option<(Vec<Anchor>, f64, Vec<Point>)>,
 }
 
 impl Draft {
+    pub fn preview_path(&mut self, tolerance: f64) -> &[Point] {
+        let stale = self.preview_cache.as_ref().is_none_or(|(anchors, old_tolerance, _)|
+            anchors != &self.anchors || *old_tolerance != tolerance);
+        if stale {
+            self.preview_cache = Some((self.anchors.clone(), tolerance,
+                pen_path_with_tolerance(&self.anchors, false, tolerance)));
+        }
+        &self.preview_cache.as_ref().unwrap().2
+    }
     pub fn new(tool: Tool) -> Self {
         Self {
             tool,
             anchors: vec![],
             drag_start: None,
+            preview_cache: None,
         }
     }
 }
 
 pub fn pen_path(anchors: &[Anchor], close: bool) -> Vec<Point> {
+    pen_path_with_tolerance(anchors, close, 0.02)
+}
+
+pub fn pen_path_with_tolerance(anchors: &[Anchor], close: bool, tolerance: f64) -> Vec<Point> {
     let Some(first) = anchors.first() else {
         return vec![];
     };
@@ -72,18 +88,19 @@ pub fn pen_path(anchors: &[Anchor], close: bool) -> Vec<Point> {
         .iter()
         .zip(anchors.iter().skip(1).chain(close.then_some(first)))
     {
-        if a.tangent == [0.; 2] && b.tangent == [0.; 2] {
+        let outgoing = if a.break_outgoing { [0.; 2] } else { a.tangent };
+        if outgoing == [0.; 2] && b.tangent == [0.; 2] {
             path.push(b.point);
         } else {
             append_cubic(
                 &mut path,
                 [
                     a.point,
-                    [a.point[0] + a.tangent[0], a.point[1] + a.tangent[1]],
+                    [a.point[0] + outgoing[0], a.point[1] + outgoing[1]],
                     [b.point[0] - b.tangent[0], b.point[1] - b.tangent[1]],
                     b.point,
                 ],
-                0.02,
+                tolerance,
             );
         }
     }
@@ -180,15 +197,71 @@ mod tests {
             &[
                 Anchor {
                     point: [10., 10.],
-                    tangent: [0., -5.],
+                    tangent: [0., -5.], break_outgoing: false,
                 },
                 Anchor {
                     point: [20., 10.],
-                    tangent: [0., 5.],
+                    tangent: [0., 5.], break_outgoing: false,
                 },
             ],
             false,
         );
         assert!(pen.len() > 2 && pen.iter().any(|p| p[1] < 8.));
+    }
+}
+
+/// Photoshop-style Shift constraint to 45-degree increments.
+pub fn constrain_pen(origin: Point, point: Point) -> Point {
+    let (dx,dy) = (point[0]-origin[0],point[1]-origin[1]);
+    let angle = (dy.atan2(dx)/std::f64::consts::FRAC_PI_4).round()*std::f64::consts::FRAC_PI_4;
+    let length = dx*angle.cos()+dy*angle.sin();
+    [origin[0]+length*angle.cos(),origin[1]+length*angle.sin()]
+}
+
+#[cfg(test)]
+mod pen_constraint_tests {
+    use super::*;
+    #[test]
+    fn shift_locks_horizontal_vertical_and_diagonal() {
+        let a = constrain_pen([10.,20.],[30.,22.]);
+        assert!((a[1]-20.).abs()<1e-8);
+        let b = constrain_pen([10.,20.],[12.,40.]);
+        assert!((b[0]-10.).abs()<1e-8);
+        let c = constrain_pen([10.,20.],[30.,38.]);
+        assert!(((c[0]-10.)-(c[1]-20.)).abs()<1e-8);
+    }
+}
+
+#[cfg(test)]
+mod preview_cache_tests {
+    use super::*;
+    #[test]
+    fn cached_preview_matches_curve_and_invalidates_on_edit_and_zoom() {
+        let mut draft = Draft::new(Tool::Pen);
+        draft.anchors = vec![Anchor { point: [0.,0.], tangent: [10.,15.], break_outgoing: false }, Anchor { point: [40.,20.], tangent: [5.,-10.], break_outgoing: false }];
+        let expected = pen_path_with_tolerance(&draft.anchors, false, 0.1);
+        assert_eq!(draft.preview_path(0.1), expected);
+        let address = draft.preview_path(0.1).as_ptr();
+        assert_eq!(draft.preview_path(0.1).as_ptr(), address);
+        draft.anchors[1].point = [50.,30.];
+        assert_eq!(draft.preview_path(0.1).last(), Some(&[50.,30.]));
+        let expected = pen_path_with_tolerance(&draft.anchors, false, 0.01);
+        assert_eq!(draft.preview_path(0.01), expected);
+        assert_eq!(pen_path(&draft.anchors,false),pen_path_with_tolerance(&draft.anchors,false,0.02));
+    }
+}
+
+#[cfg(test)]
+mod corner_handle_tests {
+    use super::*;
+    #[test]
+    fn breaking_outgoing_preserves_incoming_curve() {
+        let a = Anchor { point: [0.,0.], tangent: [0.,0.], break_outgoing: false };
+        let mut b = Anchor { point: [20.,20.], tangent: [10.,0.], break_outgoing: false };
+        let c = Anchor { point: [40.,20.], tangent: [0.,0.], break_outgoing: false };
+        let incoming = pen_path(&[a,b],false);
+        b.break_outgoing = true;
+        assert_eq!(pen_path(&[a,b],false),incoming);
+        assert_eq!(pen_path(&[b,c],false),vec![b.point,c.point]);
     }
 }

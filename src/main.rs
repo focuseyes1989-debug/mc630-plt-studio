@@ -26,6 +26,9 @@ mod ui_theme;
 mod update_install;
 mod updater;
 mod workspace_session;
+mod ui_benchmark;
+#[cfg(windows)]
+mod win32_prototype;
 
 #[cfg(windows)]
 mod native_print;
@@ -602,8 +605,9 @@ impl Studio {
         let mut tab_rects = Vec::new();
         let busy = self.a4.tab_busy() || self.closing_all || self.save_all.is_some() || self.pending_new.is_some();
         let bar = egui::TopBottomPanel::top("project-tabs")
-            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(ui_theme::TAB_STRIP))
+            .frame(ui_theme::compact_bar(ctx).fill(ui_theme::TAB_STRIP))
             .show(ctx, |ui| {
+            ui_theme::compact_spacing(ui);
             egui::ScrollArea::horizontal()
                 .drag_to_scroll(false)
                 .show(ui, |ui| {
@@ -688,6 +692,10 @@ impl Studio {
                         new = ui.add_enabled(!busy, egui::Button::new("+").frame(false))
                             .on_hover_text("New document (Ctrl+N)")
                             .clicked();
+                        if !self.empty_workspace {
+                            ui.separator();
+                            self.a4.side_tabs(ui);
+                        }
                     });
                 });
         });
@@ -751,6 +759,26 @@ impl Studio {
 
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        thread_local! {
+            static BENCH: std::cell::RefCell<Option<ui_benchmark::Session>> = std::cell::RefCell::new(
+                ui_benchmark::arguments("--benchmark-egui").map(|(_, output)|
+                    ui_benchmark::Session::new("egui-wgpu-full-studio", output)));
+        }
+        BENCH.with(|bench| {
+            let mut bench = bench.borrow_mut();
+            if let Some(session) = bench.as_mut() {
+                ctx.request_repaint();
+                if self.a4.benchmark_ready() {
+                    if let Some((back, zoom, pan)) = session.step() {
+                        self.a4.benchmark_camera(back, zoom, pan);
+                    } else {
+                        session.finish();
+                        *bench = None;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        });
         self.a4.poll_project_io(ctx);
         for tab in self.tabs.iter_mut().flatten(){tab.poll_project_io(ctx);}
         if self.a4.project_io_busy() {
@@ -982,6 +1010,21 @@ impl eframe::App for Studio {
 }
 
 fn main() -> eframe::Result {
+    ui_benchmark::PROCESS_START.get_or_init(std::time::Instant::now);
+    #[cfg(windows)]
+    if std::env::args_os().any(|arg| arg == "--prototype-win32") {
+        let supplied = ui_benchmark::arguments("--prototype-win32");
+        let selected = supplied.or_else(|| {
+            rfd::FileDialog::new().add_filter("MC630 project", &["mc630"])
+                .pick_file().map(|path| (path, PathBuf::from("-")))
+        });
+        return if let Some((project, output)) = selected {
+            win32_prototype::run(project, output)
+                .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string()))))
+        } else {
+            Ok(())
+        };
+    }
     if update_install::run_helper() {
         return Ok(());
     }
@@ -992,7 +1035,8 @@ fn main() -> eframe::Result {
             .and_then(|exe| file_association::register(&exe));
         return result.map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e))));
     }
-    let launch_project = file_association::project_argument(std::env::args_os().skip(1));
+    let launch_project = ui_benchmark::arguments("--benchmark-egui").map(|(project, _)| project)
+        .or_else(|| file_association::project_argument(std::env::args_os().skip(1)));
     let icon = image::load_from_memory(include_bytes!("../assets/studio-icon.png"))
         .expect("valid embedded Studio icon")
         .into_rgba8();

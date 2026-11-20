@@ -186,7 +186,7 @@ impl A4Studio {
         self.texture = None;
         self.refresh_source_digest();
         if prepared {
-            self.art=art;
+            self.art = art.map(Into::into);
             self.texture=preview.map(|image|ctx.load_texture("sticker",image,egui::TextureOptions::LINEAR));
         } else if !self.source.is_empty() {
             self.retrace(ctx);
@@ -262,8 +262,8 @@ impl A4Studio {
             ui.heading(if job.saving{"Saving project"}else{"Opening project"});
             ui.add(egui::Label::new(job.path.file_name().unwrap_or_default().to_string_lossy()).truncate());
             ui.add_space(10.);let (progress,stage)=job.stage();
-            ui.add(egui::ProgressBar::new(progress).animate(true));
-            ui.horizontal(|ui|{ui.spinner();ui.label(stage);});
+            ui.add(crate::ui_theme::progress_bar(progress).animate(false));
+            ui.label(stage);
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }

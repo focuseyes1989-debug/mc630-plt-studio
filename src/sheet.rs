@@ -118,7 +118,11 @@ impl CcdTrial {
             .collect();
         Ok(paths)
     }
-    pub fn pair(&self, layout: &Layout, art: &Artwork) -> Result<(String, String), String> {
+    fn validated_cut_paths(
+        &self,
+        layout: &Layout,
+        art: &Artwork,
+    ) -> Result<Vec<Vec<Point>>, String> {
         if !layout.has_visible_images() {
             return Err("Show at least one image before exporting.".into());
         }
@@ -150,7 +154,8 @@ impl CcdTrial {
             );
         }
         let quiet = self.diameter / 2. + 2.;
-        for p in self.cut_paths(layout, art)?.iter().flatten() {
+        let paths = self.cut_paths(layout, art)?;
+        for p in paths.iter().flatten() {
             let x = p[0] + dots[0][0];
             let y = p[1] + dots[0][1];
             if x < dots[0][0] + quiet
@@ -161,6 +166,12 @@ impl CcdTrial {
                 return Err("Cut border enters CCD mark clearance. Increase Dot center gap or reduce Cut border.".into());
             }
         }
+        Ok(paths)
+    }
+
+    pub fn pair(&self, layout: &Layout, art: &Artwork) -> Result<(String, String), String> {
+        let paths = self.validated_cut_paths(layout, art)?;
+        let dots = self.marks(layout);
         let mut html = layout.print_html(art)?;
         for (x, y) in layout.manual_marks() {
             let old = format!(
@@ -193,7 +204,7 @@ impl CcdTrial {
         let mut plt = format!("{mark_header}CT1;PA;PU0,0;");
         // MC630 CCD machine order: feed (page Y), then carriage (page X).
         // Keep cut_paths in page coordinates for the preview; transpose only on export.
-        for path in self.cut_paths(layout, art)? {
+        for path in paths {
             write_plt_path(&mut plt, &path, layout.units, true);
         }
         plt.push_str("PU0,0;!PG;");
@@ -1031,6 +1042,23 @@ fn orientation_is_default(orientation: &Orientation) -> bool {
     *orientation == Orientation::default()
 }
 impl Placement {
+    /// Crop in normalized source coordinates, retaining physical scale and orientation.
+    pub fn cropped(self, bounds: [f64; 4]) -> Self {
+        let [u, v, uw, vh] = bounds;
+        let (sw, sh) = self.orientation.source_size(self.width, self.height);
+        let corners = [[u, v], [u + uw, v], [u, v + vh], [u + uw, v + vh]]
+            .map(|[x,y]| self.orientation.point([x * sw, y * sh], self.width, self.height));
+        let min_x = corners.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let min_y = corners.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        let max_x = corners.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let max_y = corners.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+        let mut orientation = self.orientation;
+        if let Some(ref mut rotation) = orientation.free_rotation {
+            rotation.source_aspect = sw * uw / (sh * vh);
+        }
+        Self { x: self.x + min_x, y: self.y + min_y, width: max_x - min_x,
+            height: max_y - min_y, orientation }
+    }
     pub fn with_rotation(mut self, degrees: f64) -> Self {
         let degrees = degrees.rem_euclid(360.);
         if !degrees.is_finite() || degrees == self.orientation.degrees() {
@@ -1488,7 +1516,7 @@ impl Layout {
         }
         let items = self.items()?;
         if let Some(profile) = ccd {
-            profile.pair(self, a)?;
+            profile.validated_cut_paths(self, a)?;
         }
         let dpi = 300.;
         let mm = |x: f64| (x / 25.4 * dpi).round() as u32;
@@ -1734,6 +1762,28 @@ impl Layout {
     }
     pub fn items(&self) -> Result<Vec<Placement>, String> {
         self.resolved_items(false)
+    }
+    /// Editing preview may show a single oversized image without changing its size.
+    /// Production output continues to use `items` and its page validation.
+    pub fn editor_items(&self) -> Result<Vec<Placement>, String> {
+        match self.items() {
+            Ok(items) => Ok(items),
+            Err(error) => {
+                self.capacity()?;
+                if self.count != 1 { return Err(error); }
+                let [left, _, top, _] = self.margins();
+                let item = self.custom.get(&0).copied().unwrap_or(Placement {
+                    x: left, y: top, width: self.width, height: self.height,
+                    orientation: Default::default(),
+                });
+                if [item.x, item.y, item.width, item.height].iter().any(|v| !v.is_finite())
+                    || item.width < 1. || item.height < 1. || !item.orientation.valid()
+                    || item.x < 0. || item.y < 0. {
+                    return Err(error);
+                }
+                Ok(vec![item])
+            }
+        }
     }
     pub fn positions(&self) -> Result<Vec<Point>, String> {
         Ok(self.items()?.iter().map(|p| [p.x, p.y]).collect())
@@ -3244,5 +3294,38 @@ mod tests {
             l.print_html(&a).unwrap(),
             Layout::default().print_html(&a).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod oversized_preview_tests {
+    use super::*;
+    #[test]
+    fn oversized_artwork_keeps_dimensions_in_editor_and_output_stays_validated() {
+        let layout = Layout { count: 1, width: 350., height: 420., ..Layout::default() };
+        let items = layout.editor_items().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!((items[0].width, items[0].height), (350., 420.));
+        assert!(layout.items().is_err());
+        let repeated = Layout { count: 2, ..layout };
+        assert!(repeated.editor_items().is_err());
+    }
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+    #[test]
+    fn crop_retains_physical_scale_and_rotation() {
+        let item = Placement { x: 10., y: 20., width: 100., height: 80., orientation: Default::default() };
+        let cropped = item.cropped([0.1, 0.25, 0.6, 0.5]);
+        assert_eq!((cropped.x, cropped.y, cropped.width, cropped.height), (20., 40., 60., 40.));
+        for angle in [90., 33., 180.] {
+            let rotated = item.with_rotation(angle);
+            let crop = rotated.cropped([0.1, 0.25, 0.6, 0.5]);
+            let (w, h) = crop.orientation.source_size(crop.width, crop.height);
+            assert!((w - 60.).abs() < 1e-8 && (h - 40.).abs() < 1e-8);
+            assert_eq!(crop.orientation.degrees(), rotated.orientation.degrees());
+        }
     }
 }

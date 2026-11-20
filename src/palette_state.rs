@@ -44,11 +44,18 @@ pub struct Section {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct State {
-    #[serde(default)]
-    pub sections: [Section; 3],
+    #[serde(default, deserialize_with = "deserialize_sections")]
+    pub sections: [Section; 4],
     pub geometry: Option<Geometry>,
     pub visible: bool,
     pub production: bool,
+}
+// Older versions stored three sidebar sections; preserve their state.
+fn deserialize_sections<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<[Section; 4], D::Error> {
+    let old = <Vec<Section> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut sections = [Section::default(); 4];
+    for (target, source) in sections.iter_mut().zip(old) { *target = source; }
+    Ok(sections)
 }
 pub struct Store {
     path: Option<PathBuf>,
@@ -129,6 +136,16 @@ impl Store {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn three_sections_migrate_without_losing_selection() {
+        let old = r#"{"sections":[{"geometry":null,"visible":false},{"geometry":null,"visible":false},{"geometry":null,"visible":true}],"geometry":null,"visible":true,"production":false}"#;
+        let state: super::State = serde_json::from_str(old).unwrap();
+        assert!(state.sections[2].visible);
+        assert!(!state.sections[3].visible);
+        let restored: super::State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(state, restored);
+    }
+
     #[test]
     fn separate_dialog_geometry_roundtrips_and_old_palette_files_still_load() {
         let path =

@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "mc630-plt-studio"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arboard",
  "base64",
@@ -1824,6 +1824,7 @@ dependencies = [
  "url",
  "usvg",
  "webbrowser",
+ "windows",
  "windows-sys 0.59.0",
  "winresource",
 ]

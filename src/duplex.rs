@@ -356,6 +356,7 @@ pub struct BackEditor {
     camera: crate::canvas_camera::CanvasCamera,
     view_zoom: Option<f32>,
     view_pan: egui::Vec2,
+    viewport_size: egui::Vec2,
     copied: Option<BackImage>,
     contour: usize,
     keep_ratio: bool,
@@ -774,6 +775,7 @@ impl BackEditor {
         margins[flip_axis] = [page[flip_axis] - end, page[flip_axis] - start];
         egui::CentralPanel::default().show(ctx, |ui| {
             let viewport = ui.available_size();
+            self.viewport_size = viewport;
             let (canvas, _) = ui.allocate_exact_size(viewport, egui::Sense::hover());
             let zoom = self.view_zoom.get_or_insert(1.);
             let pan_gesture = self.camera.update(
@@ -1318,5 +1320,16 @@ pub(crate) mod tests {
             )
         });
         assert_eq!(editor.textures.len(), 1);
+    }
+}
+impl BackEditor {
+    pub(crate) fn benchmark_camera(&mut self, zoom: f32, pan: [f32; 2]) {
+        self.camera = Default::default();
+        self.view_zoom = Some(zoom);
+        self.view_pan = egui::vec2(pan[0], pan[1])
+            - self.viewport_size * ((zoom - 1.).max(0.) * 0.5);
+    }
+    pub(crate) fn benchmark_point(item: &BackImage, uv: [f64; 2]) -> [f64; 2] {
+        item.point(uv)
     }
 }

@@ -1,15 +1,29 @@
 use eframe::egui;
 
 pub const BUTTON_RADIUS: egui::CornerRadius = egui::CornerRadius::same(5);
-pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(21, 116, 196);
-pub const CANVAS: egui::Color32 = egui::Color32::from_rgb(220, 220, 224);
-pub const TAB_STRIP: egui::Color32 = egui::Color32::from_rgb(232, 232, 235);
+pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 103, 192);
+pub const CANVAS: egui::Color32 = egui::Color32::from_rgb(230, 233, 237);
+pub const TAB_STRIP: egui::Color32 = egui::Color32::from_rgb(243, 243, 243);
+
+/// Compact editor chrome; dialog and sidebar spacing stays unchanged.
+pub fn compact_bar(ctx: &egui::Context) -> egui::Frame {
+    egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 2))
+}
+
+pub fn compact_spacing(ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing = egui::vec2(4., 2.);
+    ui.spacing_mut().button_padding = egui::vec2(6., 3.);
+    ui.spacing_mut().interact_size = egui::vec2(26., 26.);
+}
 
 pub fn underline_tab(ui: &egui::Ui, rect: egui::Rect) {
     let y = rect.bottom() - 1.;
     ui.painter().line_segment(
-        [egui::pos2(rect.left() + 4., y), egui::pos2(rect.right() - 4., y)],
-        egui::Stroke::new(2_f32, ui.visuals().text_color()),
+        [
+            egui::pos2(rect.left() + 4., y),
+            egui::pos2(rect.right() - 4., y),
+        ],
+        egui::Stroke::new(2_f32, ACCENT),
     );
 }
 
@@ -42,20 +56,53 @@ pub fn close_icon(ui: &mut egui::Ui) -> egui::Response {
 }
 
 pub fn apply(ctx: &egui::Context) {
+    // Use the installed Windows font without distributing system font files.
+    // egui's bundled fonts remain fallbacks on other platforms.
+    let mut fonts = egui::FontDefinitions::default();
+    #[cfg(windows)]
+    if let Some(data) = [r"C:\Windows\Fonts\segoeui.ttf"]
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+    {
+        fonts
+            .font_data
+            .insert("windows-ui".into(), egui::FontData::from_owned(data).into());
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "windows-ui".into());
+    }
+    let icon_family = egui::FontFamily::Name("windows-icons".into());
+    let mut native_icons = false;
+    #[cfg(windows)]
+    {
+        let font_dir = std::env::var_os("WINDIR").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows")).join("Fonts");
+        if let Some(data) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter()
+            .find_map(|name| std::fs::read(font_dir.join(name)).ok())
+        {
+            fonts.font_data.insert("windows-icons".into(), egui::FontData::from_owned(data).into());
+            fonts.families.insert(icon_family, vec!["windows-icons".into()]);
+            native_icons = true;
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("windows-icons-loaded"), native_icons));
+    ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Light);
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
-    style.animation_time = 0.;
+    style.animation_time = 0.10;
     let visuals = &mut style.visuals;
-    visuals.panel_fill = egui::Color32::from_rgb(247, 246, 244);
-    visuals.window_fill = visuals.panel_fill;
+    visuals.panel_fill = egui::Color32::from_rgb(243, 243, 243);
+    visuals.window_fill = egui::Color32::from_rgb(249, 249, 249);
     visuals.extreme_bg_color = egui::Color32::WHITE;
-    visuals.override_text_color = Some(egui::Color32::from_rgb(42, 44, 46));
-    visuals.selection.bg_fill = egui::Color32::from_rgb(210, 232, 251);
+    visuals.override_text_color = Some(egui::Color32::from_rgb(32, 32, 32));
+    visuals.selection.bg_fill = egui::Color32::from_rgb(229, 241, 251);
     visuals.selection.stroke = egui::Stroke::new(1.5_f32, ACCENT);
     visuals.slider_trailing_fill = true;
 
-    let border = egui::Stroke::new(1_f32, egui::Color32::from_rgb(207, 204, 200));
+    let border = egui::Stroke::new(1_f32, egui::Color32::from_rgb(215, 215, 215));
     for widgets in [
         &mut visuals.widgets.inactive,
         &mut visuals.widgets.hovered,
@@ -68,27 +115,36 @@ pub fn apply(ctx: &egui::Context) {
         widgets.weak_bg_fill = egui::Color32::WHITE;
         widgets.expansion = 0.;
     }
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(237, 246, 254);
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(243, 248, 252);
     visuals.widgets.hovered.bg_stroke =
-        egui::Stroke::new(1_f32, egui::Color32::from_rgb(122, 170, 212));
+        egui::Stroke::new(1_f32, egui::Color32::from_rgb(164, 194, 219));
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(243, 248, 252);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(229, 241, 251);
+    visuals.widgets.open.bg_fill = egui::Color32::from_rgb(229, 241, 251);
+    visuals.widgets.open.weak_bg_fill = egui::Color32::from_rgb(229, 241, 251);
     visuals.widgets.active.bg_stroke = visuals.selection.stroke;
     visuals.widgets.active.weak_bg_fill = visuals.selection.bg_fill;
     visuals.widgets.open.bg_stroke = visuals.selection.stroke;
     visuals.widgets.noninteractive.bg_stroke = border;
-    visuals.widgets.noninteractive.bg_fill = CANVAS;
-    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(235, 235, 235);
+    visuals.window_corner_radius = egui::CornerRadius::same(10);
     visuals.window_stroke = border;
     visuals.window_shadow = egui::epaint::Shadow {
-        offset: [0, 4],
-        blur: 14,
+        offset: [0, 6],
+        blur: 20,
         spread: 0,
-        color: egui::Color32::from_black_alpha(32),
+        color: egui::Color32::from_black_alpha(28),
     };
-    style.spacing.item_spacing = egui::vec2(7., 8.);
-    style.spacing.button_padding = egui::vec2(9., 5.);
+    style.spacing.item_spacing = egui::vec2(8., 8.);
+    style.spacing.button_padding = egui::vec2(10., 5.);
     style.spacing.interact_size = egui::vec2(30., 28.);
     style.spacing.window_margin = egui::Margin::same(14);
     style.spacing.slider_width = 148.;
+    style.spacing.slider_rail_height = 4.;
+    visuals.handle_shape = egui::style::HandleShape::Circle;
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(2_f32, ACCENT);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2_f32, ACCENT);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(2_f32, ACCENT);
     style
         .text_styles
         .insert(egui::TextStyle::Body, egui::FontId::proportional(13.));
@@ -110,6 +166,9 @@ pub enum Icon {
     Settings,
     Print,
     Outline,
+    Registration,
+    Visibility,
+    Crop,
     Grid,
     Fit,
     New,
@@ -134,7 +193,6 @@ pub enum Icon {
     Refresh,
     Swap,
     Check,
-    Undo,
     OpenPath,
     ClosedPath,
     Help,
@@ -145,7 +203,7 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, hint: &str) -> bool {
 }
 
 pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) -> bool {
-    let (r, response) = ui.allocate_exact_size(egui::vec2(32., 32.), egui::Sense::click());
+    let (r, response) = ui.allocate_exact_size(egui::Vec2::splat(ui.spacing().interact_size.y.min(32.)), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, hint)
     });
@@ -178,22 +236,30 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
 }
 
 pub fn tool_indicator(ui: &mut egui::Ui, kind: Icon, label: &str) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32., 32.), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(ui.spacing().interact_size.y.min(32.)), egui::Sense::hover());
     paint_icon(ui, rect, kind);
     response.labelled_by(ui.label(label).id);
 }
 
 fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
     let painter = ui.painter();
+    if let Some(glyph) = windows_icon(kind)
+        && ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::new("windows-icons-loaded")).unwrap_or(false))
+    {
+        painter.text(r.center(), egui::Align2::CENTER_CENTER, glyph,
+            egui::FontId::new(17., egui::FontFamily::Name("windows-icons".into())),
+            if ui.is_enabled() { ui.visuals().text_color() } else { ui.visuals().weak_text_color() });
+        return;
+    }
     let ink = egui::Stroke::new(
         1.4_f32,
         if ui.is_enabled() {
-            egui::Color32::from_gray(55)
+            ui.visuals().text_color()
         } else {
-            egui::Color32::from_gray(150)
+            ui.visuals().weak_text_color()
         },
     );
-    let p = |x: f32, y: f32| r.min + egui::vec2(x, y);
+    let p = |x: f32, y: f32| r.min + egui::vec2(x, y) * (r.width() / 32.);
     let line = |a: (f32, f32), b: (f32, f32)| {
         painter.line_segment([p(a.0, a.1), p(b.0, b.1)], ink);
     };
@@ -212,7 +278,7 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
                 painter.rect_filled(
                     egui::Rect::from_center_size(p(x, y), egui::vec2(4., 6.)),
                     1.,
-                    egui::Color32::from_gray(60),
+                    ink.color,
                 );
             }
         }
@@ -233,6 +299,21 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
             ] {
                 line(a, b);
             }
+        }
+        Icon::Visibility => {
+            painter.add(egui::Shape::closed_line(vec![p(4.,16.), p(10.,10.), p(22.,10.), p(28.,16.), p(22.,22.), p(10.,22.)], ink));
+            painter.circle_stroke(p(16.,16.), 3., ink);
+        }
+        Icon::Crop => {
+            line((9., 4.), (9., 23.)); line((9., 23.), (28., 23.));
+            line((4., 9.), (23., 9.)); line((23., 9.), (23., 28.));
+        }
+        Icon::Registration => {
+            painter.circle_stroke(p(16., 16.), 7., ink);
+            line((16., 4.), (16., 12.));
+            line((16., 20.), (16., 28.));
+            line((4., 16.), (12., 16.));
+            line((20., 16.), (28., 16.));
         }
         Icon::Outline => {
             painter.add(egui::Shape::closed_line(
@@ -409,7 +490,11 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
         }
         Icon::FlipHorizontal | Icon::FlipVertical => {
             let transform = |(x, y)| {
-                if kind == Icon::FlipVertical { (y, x) } else { (x, y) }
+                if kind == Icon::FlipVertical {
+                    (y, x)
+                } else {
+                    (x, y)
+                }
             };
             for (a, b) in [
                 ((16., 6.), (16., 26.)),
@@ -434,21 +519,6 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
         Icon::Check => {
             line((8., 16.), (13., 21.));
             line((13., 21.), (24., 10.));
-        }
-        Icon::Undo => {
-            line((6., 13.), (12., 7.));
-            line((6., 13.), (12., 19.));
-            painter.add(egui::Shape::line(
-                vec![
-                    p(6., 13.),
-                    p(21., 13.),
-                    p(25., 16.),
-                    p(25., 22.),
-                    p(21., 25.),
-                    p(15., 25.),
-                ],
-                ink,
-            ));
         }
         Icon::OpenPath => {
             painter.add(egui::Shape::line(
@@ -505,7 +575,7 @@ pub fn paint_workspace(painter: &egui::Painter, area: egui::Rect) {
     }
     let mut dots = egui::Mesh::default();
     let spacing = 22.;
-    let ink = egui::Color32::from_rgb(166, 167, 175);
+    let ink = egui::Color32::from_rgb(195, 199, 205);
     let mut y = (visible.top() / spacing).ceil() * spacing;
     while y < visible.bottom() {
         let mut x = (visible.left() / spacing).ceil() * spacing;
@@ -519,4 +589,71 @@ pub fn paint_workspace(painter: &egui::Painter, area: egui::Rect) {
         y += spacing;
     }
     painter.add(egui::Shape::mesh(dots));
+}
+
+pub fn progress_bar(progress: f32) -> egui::ProgressBar {
+    egui::ProgressBar::new(progress).desired_height(6.).corner_radius(3).fill(ACCENT)
+}
+
+pub fn spin_box(ui: &mut egui::Ui, value: &mut f64, step: f64, range: std::ops::RangeInclusive<f64>, suffix: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.;
+        let mut response = ui.add(egui::DragValue::new(value).speed(step).range(range.clone())
+            .update_while_editing(false).suffix(suffix));
+        let mut delta = 0.;
+        if ui.small_button("-").on_hover_text("Decrease").clicked() { delta -= step; }
+        if ui.small_button("+").on_hover_text("Increase").clicked() { delta += step; }
+        if delta != 0. {
+            let next = (*value + delta).clamp(*range.start(), *range.end());
+            if next != *value { *value = next; response.mark_changed(); }
+        }
+        response
+    }).inner
+}
+
+// Documented Segoe Fluent / MDL2 code points shared by Windows 10 and 11.
+// Drawing-specific symbols retain their precise vector silhouettes.
+fn windows_icon(kind: Icon) -> Option<char> {
+    Some(match kind {
+        Icon::Visibility => '\u{E890}',
+        Icon::Crop => '\u{E7A8}',
+        Icon::New => '\u{E7C3}',
+        Icon::Open => '\u{E8E5}',
+        Icon::Save => '\u{E74E}',
+        Icon::Import => '\u{E898}',
+        Icon::Export => '\u{E896}',
+        Icon::Settings => '\u{E713}',
+        Icon::Print => '\u{E749}',
+        Icon::Artwork => '\u{EB9F}',
+        Icon::AddImage => '\u{E710}',
+        Icon::Grid => '\u{E80A}',
+        Icon::Fit => '\u{E740}',
+        Icon::Close => '\u{E711}',
+        Icon::Delete => '\u{E74D}',
+        Icon::Copy => '\u{E8C8}',
+        Icon::Duplicate => '\u{E8A7}',
+        Icon::Paste => '\u{E77F}',
+        Icon::RotateRight => '\u{E7AD}',
+        Icon::Refresh => '\u{E72C}',
+        Icon::Check => '\u{E73E}',
+        Icon::Help => '\u{E897}',
+        Icon::Pen => '\u{ED63}',
+        _ => return None,
+    })
+}
+
+/// The nib tip is the exact anchor hotspot; outlined for light and dark art.
+pub fn paint_pen_cursor(ctx: &egui::Context, tip: egui::Pos2, closing: bool) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pen-cursor")));
+    let points = vec![tip, tip + egui::vec2(3.,12.),tip + egui::vec2(12.,16.),
+        tip + egui::vec2(16.,12.),tip + egui::vec2(12.,3.)];
+    painter.add(egui::Shape::convex_polygon(points.clone(),egui::Color32::WHITE,
+        egui::Stroke::new(3_f32,egui::Color32::WHITE)));
+    painter.add(egui::Shape::convex_polygon(points,egui::Color32::WHITE,
+        egui::Stroke::new(1_f32,egui::Color32::BLACK)));
+    painter.line_segment([tip,tip+egui::vec2(8.,8.)],egui::Stroke::new(1_f32,egui::Color32::BLACK));
+    painter.circle_filled(tip+egui::vec2(8.,8.),1.5,egui::Color32::BLACK);
+    if closing {
+        painter.circle(tip+egui::vec2(20.,2.),3.,egui::Color32::WHITE,egui::Stroke::new(1_f32,egui::Color32::BLACK));
+    }
 }

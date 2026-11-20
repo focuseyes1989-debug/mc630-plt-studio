@@ -205,9 +205,9 @@ impl UpdateDialog {
                 let bytes = self.downloaded.load(Ordering::Relaxed);
                 ui.label("Downloading update…");
                 ui.add(
-                    egui::ProgressBar::new((bytes as f32 / total.max(1) as f32).min(1.))
-                        .show_percentage()
-                        .animate(true),
+                    crate::ui_theme::progress_bar((bytes as f32 / total.max(1) as f32).min(1.))
+
+                        .animate(false),
                 );
                 ui.weak(format!(
                     "{:.1} / {:.1} MB",

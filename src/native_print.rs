@@ -330,24 +330,17 @@ impl Preferences {
         ))
     }
 
-    pub fn print(&self, image: &RgbaImage, page: [f64; 2]) -> Result<i32, String> {
-        self.print_with_output(image, page, None)
-    }
-
-    fn print_with_output(
+    fn print_artwork(
         &self,
-
-        image: &RgbaImage,
+        artwork: PrintArtwork,
         page: [f64; 2],
-
         output: Option<&std::path::Path>,
     ) -> Result<i32, String> {
         let dc = self.dc()?;
-
         let (actual_w, actual_h, dpi_x, dpi_y) = page_geometry(dc.0)?;
         validate_page_size([actual_w, actual_h], page)?;
-
-        let bits = bitmap_bgra(image);
+        let image = artwork.raster(page)?;
+        let bits = bitmap_bgra(&image);
 
         let mut info: BITMAPINFO = unsafe { zeroed() };
 
@@ -549,6 +542,24 @@ fn discover_printers() -> std::sync::mpsc::Receiver<Result<(Vec<String>, Option<
     });
     rx
 }
+pub enum PrintArtwork {
+    Front {
+        art: std::sync::Arc<mc630_plt_studio::sheet::Artwork>,
+        layout: mc630_plt_studio::sheet::Layout,
+        ccd: Option<mc630_plt_studio::sheet::CcdTrial>,
+    },
+    Back(crate::duplex::BackDocument),
+}
+
+impl PrintArtwork {
+    fn raster(self, page: [f64; 2]) -> Result<RgbaImage, String> {
+        match self {
+            Self::Front { art, layout, ccd } => layout.print_raster(&art, ccd.as_ref()),
+            Self::Back(data) => data.raster(page),
+        }
+    }
+}
+
 pub struct PrintPanel {
     discovery: Option<std::sync::mpsc::Receiver<Result<(Vec<String>, Option<String>), String>>>,
     names: Vec<String>,
@@ -634,21 +645,10 @@ impl PrintPanel {
     pub fn ui(
         &mut self,
         ui: &mut eframe::egui::Ui,
-        art: Option<&mc630_plt_studio::sheet::Artwork>,
         layout: &mc630_plt_studio::sheet::Layout,
-        ccd: Option<&mc630_plt_studio::sheet::CcdTrial>,
         status: &mut String,
-    ) {
-        self.ui_with_raster(ui, art, layout, ccd, status, None);
-    }
-    pub fn ui_with_raster(
-        &mut self,
-        ui: &mut eframe::egui::Ui,
-        art: Option<&mc630_plt_studio::sheet::Artwork>,
-        layout: &mc630_plt_studio::sheet::Layout,
-        ccd: Option<&mc630_plt_studio::sheet::CcdTrial>,
-        status: &mut String,
-        raster: Option<&dyn Fn() -> Result<RgbaImage, String>>,
+        has_artwork: bool,
+        artwork: impl FnOnce() -> Option<PrintArtwork>,
     ) {
         use eframe::egui;
 
@@ -686,13 +686,15 @@ impl PrintPanel {
 
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
             let old = self.selected.clone();
+            ui.horizontal(|ui| {
+            crate::ui_theme::compact_spacing(ui);
             egui::ComboBox::from_id_salt("native_printer")
                 .selected_text(if self.selected.is_empty() {
                     "Choose printer"
                 } else {
                     &self.selected
                 })
-                .width(ui.available_width().min(330.))
+                .width((ui.available_width() - 72.).max(160.))
                 .show_ui(ui, |ui| {
                     for name in &self.names {
                         ui.selectable_value(&mut self.selected, name.clone(), name);
@@ -703,7 +705,6 @@ impl PrintPanel {
                 self.message.clear();
             }
 
-            ui.horizontal(|ui| {
                 if icon_button(ui, Icon::Refresh, "Refresh printer list") {
                     if self.discovery.is_none() {
                         self.discovery = Some(discover_printers());
@@ -728,56 +729,47 @@ impl PrintPanel {
             });
 
             if let Some(p) = &self.preferences {
-                ui.small(p.summary());
-            } else {
-                ui.small(format!(
-                    "{} / {:.1} x {:.1} mm. Match this size in Printing Preferences at 100%.",
-                    layout.paper_label(),
-                    layout.page_width,
-                    layout.page_height
-                ));
+                ui.collapsing("Printer details", |ui| { ui.small(p.summary()); });
             }
-
-            let can_print = (raster.is_some() || art.is_some() && layout.has_visible_images())
-                && !self.selected.is_empty();
-            if ui
-                .add_enabled_ui(can_print, |ui| icon_button(ui, Icon::Print, "Print sheet"))
-                .inner
+            ui.add_space(4.);
+            ui.separator();
+            let can_print = has_artwork && !self.selected.is_empty();
+            let response = ui.horizontal(|ui| {
+                ui.add_space((ui.available_width() - 120. - ui.spacing().item_spacing.x).max(0.));
+                ui.add_enabled(can_print,
+                    egui::Button::new(egui::RichText::new("Print Sheet").color(egui::Color32::WHITE))
+                        .fill(crate::ui_theme::ACCENT)
+                        .min_size(egui::vec2(120., 30.)))
+            }).inner
+                .on_disabled_hover_text(if !has_artwork {
+                    "Add visible artwork to this side before printing."
+                } else {
+                    "Choose a printer first."
+                });
+            if response.clicked()
+                && let Some(artwork) = artwork()
             {
-                let result = (|| {
-                    self.prepare()?;
-                    let page = [layout.page_width, layout.page_height];
-                    let driver = self.preferences.as_ref().unwrap().dc()?;
-                    let (w, h, _, _) = page_geometry(driver.0)?;
-                    validate_page_size([w, h], page)?;
-                    let raster = if let Some(render) = raster {
-                        render()?
-                    } else {
-                        layout.print_raster(art.unwrap(), ccd)?
-                    };
-                    let p = self.preferences.as_ref().unwrap().clone();
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
-                        let result = std::panic::catch_unwind(|| p.print(&raster, page))
-                            .unwrap_or_else(|_| Err("Print driver operation failed.".into()));
-                        let _ = tx.send(result);
-                    });
-                    Ok::<_, String>(rx)
-                })();
-
-                match result {
-                    Ok(rx) => {
-                        self.pending = Some(rx);
-                        self.message = format!("Submitting to {}...", self.selected);
-                        *status = self.message.clone();
-                        ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(100));
-                    }
-                    Err(e) => {
-                        self.message = e;
-                        *status = self.message.clone();
-                    }
-                }
+                let name = self.selected.clone();
+                let preferences = self.preferences.clone();
+                let page = [layout.page_width, layout.page_height];
+                let ctx = ui.ctx().clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = std::panic::catch_unwind(|| {
+                        let preferences = match preferences {
+                            Some(preferences) => preferences,
+                            None => Preferences::restore(&name)?,
+                        };
+                        preferences.print_artwork(artwork, page, None)
+                    })
+                    .unwrap_or_else(|_| Err("Print worker stopped unexpectedly.".into()));
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
+                });
+                self.pending = Some(rx);
+                self.message = format!("Preparing print for {}…", self.selected);
+                *status = self.message.clone();
+                ui.ctx().request_repaint();
             }
         });
 
@@ -789,11 +781,7 @@ impl PrintPanel {
             ui.small(&self.message);
         }
 
-        ui.small(
-            "Uses saved printer preferences. Actual size / 100%; disable borderless expansion.",
-        );
 
-        ui.separator();
     }
 }
 
@@ -869,12 +857,16 @@ mod tests {
             ..Default::default()
         };
 
-        let raster = l
-            .print_raster(&a, Some(&mc630_plt_studio::sheet::CcdTrial::default()))
-            .unwrap();
-
         let job = prefs
-            .print_with_output(&raster, [l.page_width, l.page_height], Some(path))
+            .print_artwork(
+                PrintArtwork::Front {
+                    art: a.into(),
+                    layout: l,
+                    ccd: Some(Default::default()),
+                },
+                [if a3 { 420. } else { 210. }, 297.],
+                Some(path),
+            )
             .unwrap();
 
         println!("Virtual printer job {job}");

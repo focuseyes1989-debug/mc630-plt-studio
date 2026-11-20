@@ -211,3 +211,21 @@ impl A4Studio {
         self.tab_busy() || self.show_new || self.show_settings
     }
 }
+impl A4Studio {
+    pub(crate) fn benchmark_camera(&mut self, back: bool, zoom: f32, pan: [f32; 2]) {
+        self.show_back = back;
+        if back {
+            self.back.benchmark_camera(zoom, pan);
+        } else {
+            self.camera = Default::default();
+            self.zoom = zoom;
+            self.canvas_pan = egui::vec2(pan[0], pan[1]);
+            if let Some((_, viewport)) = self.navigator_view {
+                self.canvas_pan -= viewport.size() * ((zoom - 1.).max(0.) * 0.5);
+            }
+        }
+    }
+    pub(crate) fn benchmark_ready(&self) -> bool {
+        !self.project_io_busy() && self.art.is_some() && self.texture.is_some()
+    }
+}

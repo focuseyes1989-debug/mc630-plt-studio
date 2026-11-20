@@ -183,18 +183,25 @@ impl A4Studio {
             }
         });
         ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = 100.;
             ui.label("Zoom");
             let mut percent = self.camera.target_zoom(self.zoom) * 100.;
-            if ui
-                .add(
+            let slider = ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = 20.;
+                ui.add(
                     egui::Slider::new(&mut percent, 50. ..=1600.)
                         .logarithmic(true)
                         .suffix("%")
-                        .fixed_decimals(0),
+                        .fixed_decimals(0)
+                        .show_value(false),
                 )
-                .changed()
-            {
+            }).inner;
+            if slider.changed() {
                 self.camera.zoom_to(ui.ctx(), percent / 100.);
+            }
+            let mut entered_percent = f64::from(percent);
+            if crate::ui_theme::spin_box(ui, &mut entered_percent, 10., 50. ..=1600., "%").changed() {
+                self.camera.zoom_to(ui.ctx(), entered_percent as f32 / 100.);
             }
         });
     }
