@@ -70,6 +70,13 @@ pub fn append_image_bytes(
     bytes: &[u8],
     inset: f64,
 ) -> Result<(Vec<u8>, mc630_plt_studio::sheet::Layout), String> {
+    append_image_sized(layout,source,bytes,inset,None)
+}
+
+pub fn append_image_sized(
+    layout: &mc630_plt_studio::sheet::Layout, source: &[u8], bytes: &[u8], inset: f64,
+    size: Option<[f64;2]>,
+) -> Result<(Vec<u8>, mc630_plt_studio::sheet::Layout), String> {
     use image::{ImageFormat, RgbaImage, imageops};
     use mc630_plt_studio::sheet::Placement;
     use std::io::Cursor;
@@ -83,8 +90,9 @@ pub fn append_image_bytes(
     }
     let [dx, dy] = dpi(bytes).unwrap_or([300.; 2]);
     let image = decode_rgba(bytes)?;
-    let width = (f64::from(image.width()) * 25.4 / dx).max(1.);
-    let height = (f64::from(image.height()) * 25.4 / dy).max(1.);
+    let [width,height]=size.unwrap_or([(f64::from(image.width()) * 25.4 / dx).max(1.),
+        (f64::from(image.height()) * 25.4 / dy).max(1.)]);
+    if !width.is_finite() || !height.is_finite() || width<1. || height<1. {return Err("Invalid pasted image size.".into());}
 
     let [left, right, top, bottom] = layout.margins().map(|margin| margin.max(inset));
     let mut xs = vec![left];

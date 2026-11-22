@@ -1170,6 +1170,8 @@ pub struct Layout {
     /// Hand-drawn paths in page millimetres, with Y measured from the top.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_cut_paths: Vec<Vec<Point>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub image_cut_paths: std::collections::BTreeMap<usize, Vec<Vec<Point>>>,
     #[serde(default)]
     pub use_manual_cut_paths: bool,
     pub margin: f64,
@@ -1206,6 +1208,7 @@ impl Default for Layout {
             image_groups: Default::default(),
             guides: Default::default(),
             manual_cut_paths: vec![],
+            image_cut_paths: Default::default(),
             use_manual_cut_paths: false,
             margin: 15.,
             page_margins: None,
@@ -1241,6 +1244,13 @@ impl Layout {
     }
 
     pub fn validate_manual_cut_paths(&self) -> Result<(), String> {
+        if self.image_cut_paths.keys().any(|i| *i>=self.count)
+            || self.image_cut_paths.values().flatten().count()>100
+            || self.image_cut_paths.values().flatten().map(Vec::len).sum::<usize>()>10_000
+            || self.image_cut_paths.values().flatten().any(|path| !(2..=4000).contains(&path.len())
+                || path.iter().flatten().any(|v| !v.is_finite() || v.abs()>1000.)) {
+            return Err("Invalid image-linked cutlines.".into());
+        }
         if self.manual_cut_paths.len() > 100
             || self.manual_cut_paths.iter().map(Vec::len).sum::<usize>() > 10_000
             || self.manual_cut_paths.iter().any(|path| {
@@ -1254,6 +1264,74 @@ impl Layout {
             return Err("Manual cut paths must stay within the page limits.".into());
         }
         Ok(())
+    }
+    pub fn has_manual_cuts(&self) -> bool { !self.manual_cut_paths.is_empty() || self.image_cut_paths.values().any(|paths| !paths.is_empty()) }
+    pub fn link_cut_paths(&mut self, index: usize, paths: Vec<Vec<Point>>) -> Result<(), String> {
+        let items = self.editor_items()?;
+        let item = items.get(index).ok_or("Select an image to link the cutline.")?;
+        let [origin,right,_,bottom] = item.orientation.unit_corners();
+        let ax=[right[0]-origin[0],right[1]-origin[1]];
+        let ay=[bottom[0]-origin[0],bottom[1]-origin[1]];
+        let det=ax[0]*ay[1]-ax[1]*ay[0];
+        let normalized = paths.into_iter().map(|path| path.into_iter().map(|p| {
+            let q=[(p[0]-item.x)/item.width-origin[0],(p[1]-item.y)/item.height-origin[1]];
+            [(q[0]*ay[1]-q[1]*ay[0])/det,(ax[0]*q[1]-ax[1]*q[0])/det]
+        }).collect()).collect::<Vec<_>>();
+        self.image_cut_paths.entry(index).or_default().extend(normalized);
+        Ok(())
+    }
+    /// Repeated placements of the same source image inherit its manual outline.
+    /// Explicit per-image outlines take precedence; unrelated atlas tiles stay separate.
+    pub fn image_cut_paths_for(&self, index: usize) -> Option<&Vec<Vec<Point>>> {
+        self.image_cut_paths.get(&index).or_else(|| {
+            self.image_cut_paths.iter().find_map(|(&owner, paths)| {
+                let same = if self.image_tiles.is_empty() {true}
+                    else {self.image_tiles.get(index).zip(self.image_tiles.get(owner)).is_some_and(|(a,b)| a==b)};
+                same.then_some(paths)
+            })
+        })
+    }
+    pub fn manual_page_cut_paths(&self) -> Result<Vec<Vec<Point>>, String> {
+        self.validate_manual_cut_paths()?;
+        if !self.contour_offset.is_finite() || self.contour_offset.abs()>5. {return Err("Cut border must be between -5 and +5 mm.".into());}
+        let mut paths=self.manual_cut_paths.clone();
+        if !self.image_cut_paths.is_empty() {
+            let items=self.editor_items()?;
+            for (index,item) in items.iter().enumerate() {
+                if self.hidden_images.contains(&index) {continue;}
+                let Some(outlines)=self.image_cut_paths_for(index) else {continue};
+                let [origin,right,_,bottom]=item.orientation.unit_corners();
+                for outline in outlines {
+                    let page:Vec<Point>=outline.iter().map(|p|[
+                        item.x+(origin[0]+(right[0]-origin[0])*p[0]+(bottom[0]-origin[0])*p[1])*item.width,
+                        item.y+(origin[1]+(right[1]-origin[1])*p[0]+(bottom[1]-origin[1])*p[1])*item.height]).collect();
+                    if self.contour_offset==0. {paths.push(page);} else {
+                        if page.first()!=page.last() {return Err("Close the linked cutline before adjusting Outline distance.".into());}
+                        use geo::{Buffer, LineString, Polygon};
+                        use geo::algorithm::buffer::{BufferStyle, LineJoin};
+                        let polygon=Polygon::new(LineString::from(page.iter().map(|p|(p[0],p[1])).collect::<Vec<_>>()),vec![]);
+                        let offset=polygon.buffer_with_style(BufferStyle::new(self.contour_offset).line_join(LineJoin::Miter(0.75)));
+                        if offset.0.is_empty() {return Err("Outline distance removes the linked cutline. Use a smaller negative distance.".into());}
+                        for polygon in offset.0 {paths.push(polygon.exterior().0.iter().map(|p|[p.x,p.y]).collect());}
+                    }
+                }
+            }
+        }
+        if !self.smoothing.is_finite() || !(0. ..=4.).contains(&self.smoothing) {
+            return Err("Outline smoothing must be between 0 and 4 mm.".into());
+        }
+        if self.smoothing > 0. {
+            for path in &mut paths {
+                let closed=path.len()>2 && path.first()==path.last();
+                *path=if closed && self.preserve_corners {smooth_mixed_contour(path,self.smoothing)}
+                    else {smooth_path(path,self.smoothing,closed)};
+            }
+        }
+        if paths.len()>100 || paths.iter().map(Vec::len).sum::<usize>()>100_000 {return Err("Too many manual cutline points.".into());}
+        if paths.iter().flatten().any(|p|!p[0].is_finite() || !p[1].is_finite() || p[0]< -1e-7 || p[1]< -1e-7 || p[0]>self.page_width+1e-7 || p[1]>self.page_height+1e-7) {
+            return Err("Linked cutline is outside the page. Adjust the image or Outline distance.".into());
+        }
+        Ok(paths)
     }
     pub fn has_visible_images(&self) -> bool {
         (0..self.count).any(|index| !self.hidden_images.contains(&index))
@@ -1757,6 +1835,29 @@ impl Layout {
         }
         Ok(slots.into_iter().flatten().collect())
     }
+    pub fn can_repeat_tiled_image(&self) -> bool {
+        self.image_tiles.first().is_some_and(|first| self.image_tiles.iter().all(|tile| tile==first))
+    }
+    pub fn with_copy_count(&self, count: usize) -> Result<Self,String> {
+        if count==0 || count>if self.image_tiles.is_empty(){1000}else{24} {return Err("Too many copies for this layout.".into());}
+        let mut next=self.clone();
+        if !self.image_tiles.is_empty() && !self.can_repeat_tiled_image() {return Err("Use Duplicate for a sheet with different images.".into());}
+        let old_count=self.count;
+        next.count=count;
+        next.custom.retain(|i,_|*i<count);
+        next.hidden_images.retain(|i|*i<count);
+        next.image_groups.retain(|i,_|*i<count);
+        next.image_cut_paths.retain(|i,_|*i<count);
+        if let Some(tile)=self.image_tiles.first() {
+            let items=next.items()?;
+            next.custom=items.into_iter().enumerate().collect();
+            next.image_tiles=vec![*tile;count];
+            for new in old_count..count {
+                if let Some(paths)=self.image_cut_paths_for(0) {next.image_cut_paths.insert(new,paths.clone());}
+            }
+        } else {next.items()?;}
+        Ok(next)
+    }
     pub fn available_capacity(&self) -> Result<usize, String> {
         Ok(self.resolved_items(true)?.len())
     }
@@ -1798,10 +1899,9 @@ impl Layout {
     ) -> Result<Vec<Vec<Point>>, String> {
         if self.use_manual_cut_paths {
             self.validate_manual_cut_paths()?;
-            if self.manual_cut_paths.is_empty() {
-                return Err("Draw a manual cut line or switch to automatic outlines.".into());
-            }
-            return Ok(self.manual_cut_paths.clone());
+            let paths=self.manual_page_cut_paths()?;
+            if paths.is_empty() { return Err("Draw a manual cut line or switch to automatic outlines.".into()); }
+            return Ok(paths);
         }
         cache.prepare(a);
         let mut paths = Vec::new();
@@ -1910,7 +2010,8 @@ impl Layout {
     }
     pub fn manual_design_plt(&self) -> Result<String, String> {
         self.validate_manual_cut_paths()?;
-        if self.manual_cut_paths.is_empty() {
+        let resolved=self.manual_page_cut_paths()?;
+        if resolved.is_empty() {
             return Err("Draw a cut shape before exporting.".into());
         }
         if !(0. ..=1000.).contains(&self.units) || self.units == 0. {
@@ -1919,7 +2020,7 @@ impl Layout {
         let mut page = self.clone();
         page.offset_x = 0.;
         page.offset_y = 0.;
-        let paths = page.to_cutter_coordinates(self.manual_cut_paths.clone())?;
+        let paths = page.to_cutter_coordinates(resolved)?;
         let mut out = String::from("PA;PU0,0;");
         for path in paths {
             write_plt_path(&mut out, &path, self.units, false);
@@ -3327,5 +3428,130 @@ mod crop_tests {
             assert!((w - 60.).abs() < 1e-8 && (h - 40.).abs() < 1e-8);
             assert_eq!(crop.orientation.degrees(), rotated.orientation.degrees());
         }
+    }
+}
+
+#[cfg(test)]
+mod linked_cut_geometry_tests {
+    use super::*;
+    #[test]
+    fn linked_path_tracks_scale_rotation_reflection_and_physical_offset() {
+        let mut layout=Layout{count:1,width:40.,height:40.,use_manual_cut_paths:true,..Default::default()};
+        let item=Placement{x:50.,y:50.,width:40.,height:40.,orientation:Default::default()};
+        layout.custom.insert(0,item);
+        layout.link_cut_paths(0,vec![vec![[55.,55.],[85.,55.],[85.,85.],[55.,85.],[55.,55.]]]).unwrap();
+        assert_eq!(layout.manual_page_cut_paths().unwrap()[0][0],[55.,55.]);
+        layout.custom.insert(0,Placement{width:80.,height:80.,..item});
+        assert_eq!(layout.manual_page_cut_paths().unwrap()[0][0],[60.,60.]);
+        let rotated=layout.custom[&0].with_rotation(90.);
+        layout.custom.insert(0,rotated);
+        let points=layout.manual_page_cut_paths().unwrap();
+        assert!((points[0][0][0]-120.).abs()<1e-8);
+        assert!((points[0][0][1]-60.).abs()<1e-8);
+        layout.contour_offset=2.;
+        let points=layout.manual_page_cut_paths().unwrap();
+        let min_x=points.iter().flatten().map(|p|p[0]).fold(f64::INFINITY,f64::min);
+        assert!((min_x-58.).abs()<1e-6);
+        layout.contour_offset=-2.;
+        let points=layout.manual_page_cut_paths().unwrap();
+        let min_x=points.iter().flatten().map(|p|p[0]).fold(f64::INFINITY,f64::min);
+        assert!((min_x-62.).abs()<1e-6);
+        layout.contour_offset=0.;
+        let item=layout.custom[&0].with_rotation(33.);
+        layout.custom.insert(0,item);
+        let before=layout.manual_page_cut_paths().unwrap();
+        let mut flipped=item;
+        flipped.orientation.flip(true);
+        layout.custom.insert(0,flipped);
+        let after=layout.manual_page_cut_paths().unwrap();
+        for (a,b) in before[0].iter().zip(&after[0]) {
+            assert!((b[0]-(item.x+item.width-(a[0]-item.x))).abs()<1e-8);
+            assert!((b[1]-a[1]).abs()<1e-8);
+        }
+        layout.hidden_images.insert(0);
+        assert!(layout.manual_page_cut_paths().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod manual_smoothing_tests {
+    use super::*;
+    #[test]
+    fn smoothing_changes_export_without_changing_original_points_and_keeps_endpoints() {
+        let path=vec![[30.,30.],[70.,30.],[70.,70.],[30.,70.],[30.,30.]];
+        let mut layout=Layout{count:1,use_manual_cut_paths:true,manual_cut_paths:vec![path.clone()],..Default::default()};
+        let original_export=layout.manual_design_plt().unwrap();
+        layout.smoothing=1.;layout.preserve_corners=false;
+        let smooth=layout.manual_page_cut_paths().unwrap();
+        assert_ne!(smooth[0],path);
+        assert_eq!(smooth[0].first(),smooth[0].last());
+        assert_eq!(layout.manual_cut_paths[0],path);
+        assert_ne!(layout.manual_design_plt().unwrap(),original_export);
+        layout.manual_cut_paths=vec![vec![[30.,30.],[40.,31.],[50.,29.],[60.,30.]]];
+        let open=layout.manual_page_cut_paths().unwrap();
+        assert_eq!(open[0].first(),Some(&[30.,30.]));
+        assert_eq!(open[0].last(),Some(&[60.,30.]));
+    }
+    #[test]
+    fn smoothing_applies_to_image_linked_paths_after_offset() {
+        let mut layout=Layout{count:1,width:40.,height:40.,use_manual_cut_paths:true,..Default::default()};
+        layout.link_cut_paths(0,vec![vec![[20.,20.],[50.,20.],[50.,50.],[20.,50.],[20.,20.]]]).unwrap();
+        layout.contour_offset=1.;
+        let offset=layout.manual_page_cut_paths().unwrap();
+        let original=layout.image_cut_paths.clone();
+        layout.smoothing=1.;layout.preserve_corners=false;
+        assert_ne!(layout.manual_page_cut_paths().unwrap(),offset);
+        assert_eq!(layout.image_cut_paths,original);
+        layout.smoothing=0.;
+        assert_eq!(layout.manual_page_cut_paths().unwrap(),offset);
+    }
+}
+
+#[cfg(test)]
+mod repeat_manual_outline_tests {
+    use super::*;
+    #[test]
+    fn twelve_repeated_photos_all_receive_outline_in_preview_and_export() {
+        let mut layout=Layout{count:12,width:40.,height:50.,use_manual_cut_paths:true,..Default::default()};
+        layout.link_cut_paths(0,vec![vec![[20.,20.],[50.,20.],[50.,60.],[20.,60.],[20.,20.]]]).unwrap();
+        let paths=layout.manual_page_cut_paths().unwrap();
+        let items=layout.items().unwrap();
+        assert_eq!(paths.len(),12);
+        for (path,item) in paths.iter().zip(&items) {
+            assert!((path[0][0]-item.x-5.).abs()<1e-8);
+            assert!((path[0][1]-item.y-5.).abs()<1e-8);
+        }
+        assert_eq!(layout.manual_design_plt().unwrap().matches("PD").count(),48);
+        layout.hidden_images.insert(0);
+        assert_eq!(layout.manual_page_cut_paths().unwrap().len(),11);
+        layout.hidden_images.clear();
+        layout.custom=items.into_iter().enumerate().collect();
+        layout.image_tiles=vec![[0,0,100,100];12];
+        assert_eq!(layout.manual_page_cut_paths().unwrap().len(),12);
+        layout.image_tiles[11]=[100,0,100,100];
+        assert_eq!(layout.manual_page_cut_paths().unwrap().len(),11);
+        assert!(layout.image_cut_paths_for(11).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tiled_repeat_tests {
+    use super::*;
+    #[test]
+    fn cropped_single_image_can_repeat_and_shrink_with_linked_outlines() {
+        let mut layout=Layout{count:1,width:40.,height:50.,image_tiles:vec![[10,10,80,100]],use_manual_cut_paths:true,..Default::default()};
+        layout.custom.insert(0,Placement{x:15.,y:15.,width:40.,height:50.,orientation:Default::default()});
+        layout.link_cut_paths(0,vec![vec![[20.,20.],[50.,20.],[50.,60.],[20.,60.],[20.,20.]]]).unwrap();
+        assert!(layout.can_repeat_tiled_image());
+        let repeat=layout.with_copy_count(12).unwrap();
+        assert_eq!(repeat.image_tiles,vec![[10,10,80,100];12]);
+        assert_eq!(repeat.items().unwrap().len(),12);
+        assert_eq!(repeat.manual_page_cut_paths().unwrap().len(),12);
+        let shrink=repeat.with_copy_count(2).unwrap();
+        assert_eq!(shrink.count,2);
+        assert_eq!(shrink.image_tiles.len(),2);
+        assert_eq!(shrink.image_cut_paths.len(),2);
+        assert_eq!(shrink.manual_page_cut_paths().unwrap().len(),2);
+        assert!(shrink.with_copy_count(1000).is_err());
     }
 }

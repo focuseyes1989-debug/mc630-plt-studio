@@ -1806,13 +1806,14 @@ dependencies = [
 
 [[package]]
 name = "mc630-plt-studio"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "arboard",
  "base64",
  "eframe",
  "geo",
  "image",
+ "raw-window-handle",
  "resvg",
  "rfd",
  "roxmltree",

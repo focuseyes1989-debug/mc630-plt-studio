@@ -168,8 +168,17 @@ pub enum Icon {
     Outline,
     Registration,
     Visibility,
+    Link,
+    Unlink,
+    MarginLeft,
+    MarginRight,
+    MarginTop,
+    MarginBottom,
+    Portrait,
+    Landscape,
     Crop,
     Grid,
+    List,
     Fit,
     New,
     Open,
@@ -195,7 +204,6 @@ pub enum Icon {
     Check,
     OpenPath,
     ClosedPath,
-    Help,
 }
 
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, hint: &str) -> bool {
@@ -208,7 +216,7 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, hint)
     });
     let painter = ui.painter();
-    if selected || response.hovered() || response.has_focus() {
+    if ui.is_enabled() && (selected || response.hovered() || response.has_focus()) {
         painter.rect_filled(
             r,
             BUTTON_RADIUS,
@@ -233,6 +241,12 @@ pub fn icon_toggle(ui: &mut egui::Ui, kind: Icon, selected: bool, hint: &str) ->
         .on_hover_text(hint)
         .on_disabled_hover_text(hint)
         .clicked()
+}
+
+pub fn margin_indicator(ui: &mut egui::Ui, icon: Icon, hint: &str) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(26., 28.), egui::Sense::hover());
+    paint_icon(ui, rect, icon);
+    response.on_hover_text(hint);
 }
 
 pub fn tool_indicator(ui: &mut egui::Ui, kind: Icon, label: &str) {
@@ -300,6 +314,37 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
                 line(a, b);
             }
         }
+        Icon::Portrait | Icon::Landscape => {
+            let size = if kind == Icon::Portrait { egui::vec2(15.,22.) } else { egui::vec2(22.,15.) };
+            let rect = egui::Rect::from_center_size(p(16.,16.),size * (r.width()/32.));
+            painter.rect(rect,2.,ui.visuals().extreme_bg_color,ink,egui::StrokeKind::Inside);
+            let inset = rect.shrink(4.);
+            for t in [0.25,0.5,0.75] {
+                let y = inset.top()+inset.height()*t;
+                painter.line_segment([egui::pos2(inset.left(),y),egui::pos2(inset.right(),y)],
+                    egui::Stroke::new(1_f32,ui.visuals().weak_text_color()));
+            }
+        }
+        Icon::MarginLeft | Icon::MarginRight | Icon::MarginTop | Icon::MarginBottom => {
+            painter.rect_stroke(egui::Rect::from_min_max(p(6.,5.),p(26.,27.)),2.,
+                egui::Stroke::new(1_f32,egui::Color32::from_gray(160)),egui::StrokeKind::Inside);
+            let (a,b) = match kind {
+                Icon::MarginLeft => (p(11.,8.),p(11.,24.)),
+                Icon::MarginRight => (p(21.,8.),p(21.,24.)),
+                Icon::MarginTop => (p(10.,10.),p(22.,10.)),
+                _ => (p(10.,22.),p(22.,22.)),
+            };
+            painter.line_segment([a,b],egui::Stroke::new(2.5_f32,ACCENT));
+        }
+        Icon::Link | Icon::Unlink => {
+            for rect in [egui::Rect::from_min_max(p(5.,10.),p(17.,20.)), egui::Rect::from_min_max(p(15.,10.),p(27.,20.))] {
+                painter.rect_stroke(rect,4.,ink,egui::StrokeKind::Inside);
+            }
+            if kind == Icon::Unlink {
+                painter.line_segment([p(10.,26.),p(22.,5.)],egui::Stroke::new(3_f32,ui.visuals().panel_fill));
+                line((10.,26.),(22.,5.));
+            }
+        }
         Icon::Visibility => {
             painter.add(egui::Shape::closed_line(vec![p(4.,16.), p(10.,10.), p(22.,10.), p(28.,16.), p(22.,22.), p(10.,22.)], ink));
             painter.circle_stroke(p(16.,16.), 3., ink);
@@ -320,6 +365,9 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
                 vec![p(6., 20.), p(10., 8.), p(22., 6.), p(27., 19.), p(18., 27.)],
                 ink,
             ));
+        }
+        Icon::List => {
+            for y in [8.,16.,24.] { line((11.,y),(26.,y)); painter.circle_filled(p(6.,y),1.5,ink.color); }
         }
         Icon::Grid => {
             for n in [7., 16., 25.] {
@@ -414,7 +462,7 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
         }
         Icon::Select => {
             painter.add(egui::Shape::closed_line(
-                vec![p(8., 5.), p(24., 18.), p(17., 19.), p(14., 27.)],
+                vec![p(9., 8.), p(23., 18.), p(17., 19.), p(14., 24.)],
                 ink,
             ));
         }
@@ -533,16 +581,6 @@ fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
                 ink,
             ));
         }
-        Icon::Help => {
-            painter.circle_stroke(p(16., 16.), 10., ink);
-            painter.text(
-                p(16., 16.),
-                egui::Align2::CENTER_CENTER,
-                "?",
-                egui::FontId::proportional(15.),
-                ink.color,
-            );
-        }
         Icon::Fit => {
             for (x, y, dx, dy) in [
                 (7., 7., 7., 7.),
@@ -636,7 +674,6 @@ fn windows_icon(kind: Icon) -> Option<char> {
         Icon::RotateRight => '\u{E7AD}',
         Icon::Refresh => '\u{E72C}',
         Icon::Check => '\u{E73E}',
-        Icon::Help => '\u{E897}',
         Icon::Pen => '\u{ED63}',
         _ => return None,
     })

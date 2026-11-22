@@ -12,6 +12,7 @@ impl A4Studio {
         layout.image_groups.clear();
         layout.guides = Default::default();
         layout.manual_cut_paths.clear();
+        layout.image_cut_paths.clear();
         layout.use_manual_cut_paths = false;
         if !layout.image_tiles.is_empty() {
             layout.image_tiles.clear();
@@ -168,8 +169,9 @@ egui::Grid::new("settings-layout").num_columns(2).show(ui,|ui| {
                         ui.label("Copies");ui.add_enabled(self.layout.image_tiles.is_empty(), egui::DragValue::new(&mut self.layout.count).range(1..=1000));ui.end_row();
                         ui.label("Column spacing");ui.add(self.unit.distance(&mut self.layout.column_gap).range(0.0..=100.));ui.end_row();
                         ui.label("Row spacing");ui.add(self.unit.distance(&mut self.layout.row_gap).range(0.0..=100.));ui.end_row();
-                        self.edit_margin_fields(ui);
                     });
+                    ui.separator();
+                    self.edit_margin_fields(ui);
                     ui.checkbox(&mut self.lock,"Lock proportions for resize");
 }
 4 => {

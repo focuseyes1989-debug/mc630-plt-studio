@@ -16,10 +16,13 @@ mod file_association;
 mod image_import;
 mod palette_state;
 mod photo_size;
+mod studio_clipboard;
 mod preferences;
 mod project;
 mod project_io;
 mod recent;
+mod recent_gallery;
+mod pen_cursor;
 mod recovery;
 mod ruler;
 mod ui_theme;
@@ -759,6 +762,7 @@ impl Studio {
 
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        crate::pen_cursor::begin_frame();
         thread_local! {
             static BENCH: std::cell::RefCell<Option<ui_benchmark::Session>> = std::cell::RefCell::new(
                 ui_benchmark::arguments("--benchmark-egui").map(|(_, output)|
@@ -841,7 +845,7 @@ impl eframe::App for Studio {
         if self.a4_mode {
             self.a4.apply_palette_state(self.palette.state);
             self.a4.document_menu(ctx, &mut self.updates, frame);
-            self.a4.standard_toolbar(ctx, frame);
+            self.a4.standard_toolbar(ctx, frame, !self.empty_workspace);
             if !self.empty_workspace && self.save_all.is_none() {
                 self.a4.tool_options_bar(ctx);
             }
@@ -1058,6 +1062,7 @@ fn main() -> eframe::Result {
         },
         Box::new(move |cc| {
             ui_theme::apply(&cc.egui_ctx);
+            crate::pen_cursor::install(cc);
 
             let mut studio = Studio::default();
             if let Some(resume) = update_resume {

@@ -46,16 +46,57 @@ pub struct Anchor {
     pub point: Point,
     pub tangent: Point,
     pub break_outgoing: bool,
+    pub incoming: Option<Point>,
 }
 
 pub struct Draft {
     pub tool: Tool,
     pub anchors: Vec<Anchor>,
     pub drag_start: Option<Point>,
+    pub edit_drag: Option<usize>,
     preview_cache: Option<(Vec<Anchor>, f64, Vec<Point>)>,
 }
 
 impl Draft {
+    pub fn segment_at(&self, point: Point, tolerance: f64) -> Option<(usize, f64)> {
+        let mut best = tolerance;
+        let mut found = None;
+        for (index, pair) in self.anchors.windows(2).enumerate() {
+            let control = control_points(pair[0], pair[1]);
+            let mut previous = control[0];
+            for step in 1..=64 {
+                let end = cubic_point(control, step as f64 / 64.);
+                let d = [end[0]-previous[0],end[1]-previous[1]];
+                let length=d[0]*d[0]+d[1]*d[1];
+                let fraction=if length>0. {((point[0]-previous[0])*d[0]+(point[1]-previous[1])*d[1])/length} else {0.};
+                let fraction=fraction.clamp(0.,1.);
+                let distance=(point[0]-previous[0]-fraction*d[0]).hypot(point[1]-previous[1]-fraction*d[1]);
+                let t=((step-1) as f64+fraction)/64.;
+                if distance<best && t>0.001 && t<0.999 { best=distance;found=Some((index,t)); }
+                previous=end;
+            }
+        }
+        found
+    }
+    pub fn insert_anchor(&mut self, index: usize, t: f64) -> Option<usize> {
+        if self.anchors.len()>=256 || index+1>=self.anchors.len() || !(0. ..1.).contains(&t) { return None; }
+        let a=self.anchors[index]; let b=self.anchors[index+1];
+        let c=control_points(a,b);
+        let lerp=|a:Point,b:Point| [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];
+        let p01=lerp(c[0],c[1]);let p12=lerp(c[1],c[2]);let p23=lerp(c[2],c[3]);
+        let p012=lerp(p01,p12);let p123=lerp(p12,p23);let point=lerp(p012,p123);
+        // Preserve existing curves exactly when subdividing, including asymmetric handles.
+        let old_in=a.incoming.unwrap_or(a.tangent);
+        self.anchors[index].incoming=Some(old_in);
+        self.anchors[index].tangent=[p01[0]-a.point[0],p01[1]-a.point[1]];
+        self.anchors[index].break_outgoing=false;
+        self.anchors[index+1].incoming=Some([b.point[0]-p23[0],b.point[1]-p23[1]]);
+        let straight=c[0]==c[1] && c[2]==c[3];
+        self.anchors.insert(index+1,Anchor { point,
+            tangent:if straight {[0.;2]}else{[p123[0]-point[0],p123[1]-point[1]]},
+            incoming:Some(if straight {[0.;2]}else{[point[0]-p012[0],point[1]-p012[1]]}),break_outgoing:false });
+        Some(index+1)
+    }
     pub fn preview_path(&mut self, tolerance: f64) -> &[Point] {
         let stale = self.preview_cache.as_ref().is_none_or(|(anchors, old_tolerance, _)|
             anchors != &self.anchors || *old_tolerance != tolerance);
@@ -70,6 +111,7 @@ impl Draft {
             tool,
             anchors: vec![],
             drag_start: None,
+            edit_drag: None,
             preview_cache: None,
         }
     }
@@ -89,7 +131,8 @@ pub fn pen_path_with_tolerance(anchors: &[Anchor], close: bool, tolerance: f64) 
         .zip(anchors.iter().skip(1).chain(close.then_some(first)))
     {
         let outgoing = if a.break_outgoing { [0.; 2] } else { a.tangent };
-        if outgoing == [0.; 2] && b.tangent == [0.; 2] {
+        let incoming = b.incoming.unwrap_or(b.tangent);
+        if outgoing == [0.; 2] && incoming == [0.; 2] {
             path.push(b.point);
         } else {
             append_cubic(
@@ -97,7 +140,7 @@ pub fn pen_path_with_tolerance(anchors: &[Anchor], close: bool, tolerance: f64) 
                 [
                     a.point,
                     [a.point[0] + outgoing[0], a.point[1] + outgoing[1]],
-                    [b.point[0] - b.tangent[0], b.point[1] - b.tangent[1]],
+                    [b.point[0] - incoming[0], b.point[1] - incoming[1]],
                     b.point,
                 ],
                 tolerance,
@@ -197,11 +240,11 @@ mod tests {
             &[
                 Anchor {
                     point: [10., 10.],
-                    tangent: [0., -5.], break_outgoing: false,
+                    tangent: [0., -5.], break_outgoing: false, incoming: None,
                 },
                 Anchor {
                     point: [20., 10.],
-                    tangent: [0., 5.], break_outgoing: false,
+                    tangent: [0., 5.], break_outgoing: false, incoming: None,
                 },
             ],
             false,
@@ -238,7 +281,7 @@ mod preview_cache_tests {
     #[test]
     fn cached_preview_matches_curve_and_invalidates_on_edit_and_zoom() {
         let mut draft = Draft::new(Tool::Pen);
-        draft.anchors = vec![Anchor { point: [0.,0.], tangent: [10.,15.], break_outgoing: false }, Anchor { point: [40.,20.], tangent: [5.,-10.], break_outgoing: false }];
+        draft.anchors = vec![Anchor { point: [0.,0.], tangent: [10.,15.], break_outgoing: false, incoming: None }, Anchor { point: [40.,20.], tangent: [5.,-10.], break_outgoing: false, incoming: None }];
         let expected = pen_path_with_tolerance(&draft.anchors, false, 0.1);
         assert_eq!(draft.preview_path(0.1), expected);
         let address = draft.preview_path(0.1).as_ptr();
@@ -256,12 +299,56 @@ mod corner_handle_tests {
     use super::*;
     #[test]
     fn breaking_outgoing_preserves_incoming_curve() {
-        let a = Anchor { point: [0.,0.], tangent: [0.,0.], break_outgoing: false };
-        let mut b = Anchor { point: [20.,20.], tangent: [10.,0.], break_outgoing: false };
-        let c = Anchor { point: [40.,20.], tangent: [0.,0.], break_outgoing: false };
+        let a = Anchor { point: [0.,0.], tangent: [0.,0.], break_outgoing: false, incoming: None };
+        let mut b = Anchor { point: [20.,20.], tangent: [10.,0.], break_outgoing: false, incoming: None };
+        let c = Anchor { point: [40.,20.], tangent: [0.,0.], break_outgoing: false, incoming: None };
         let incoming = pen_path(&[a,b],false);
         b.break_outgoing = true;
         assert_eq!(pen_path(&[a,b],false),incoming);
         assert_eq!(pen_path(&[b,c],false),vec![b.point,c.point]);
+    }
+}
+
+fn control_points(a: Anchor, b: Anchor) -> [Point;4] {
+    let out=if a.break_outgoing {[0.;2]}else{a.tangent};
+    let incoming=b.incoming.unwrap_or(b.tangent);
+    [a.point,[a.point[0]+out[0],a.point[1]+out[1]],
+        [b.point[0]-incoming[0],b.point[1]-incoming[1]],b.point]
+}
+fn cubic_point(p: [Point;4], t: f64) -> Point {
+    let u=1.-t;
+    [0,1].map(|i| u*u*u*p[0][i]+3.*u*u*t*p[1][i]+3.*u*t*t*p[2][i]+t*t*t*p[3][i])
+}
+
+#[cfg(test)]
+mod insert_tests {
+    use super::*;
+    fn anchor(point: Point,tangent: Point)->Anchor { Anchor{point,tangent,incoming:None,break_outgoing:false} }
+    #[test]
+    fn subdivision_keeps_original_curve_and_can_be_bent_afterward() {
+        let a=anchor([0.,0.],[15.,25.]);let b=anchor([60.,20.],[20.,-10.]);
+        let original=control_points(a,b);
+        let mut draft=Draft::new(Tool::Pen);draft.anchors=vec![a,b];
+        assert_eq!(draft.insert_anchor(0,0.4),Some(1));
+        for n in 0..=100 {
+            let t=n as f64/100.;
+            let expected=cubic_point(original,t);
+            let actual=if t<=0.4 {cubic_point(control_points(draft.anchors[0],draft.anchors[1]),t/0.4)}
+                else {cubic_point(control_points(draft.anchors[1],draft.anchors[2]),(t-0.4)/0.6)};
+            assert!((actual[0]-expected[0]).hypot(actual[1]-expected[1])<1e-8);
+        }
+        let before=pen_path(&draft.anchors,false);
+        draft.anchors[1].tangent=[0.,20.];draft.anchors[1].incoming=None;
+        assert_ne!(pen_path(&draft.anchors,false),before);
+    }
+    #[test]
+    fn segment_hit_ignores_distant_pointer_and_inserts_on_straight_line() {
+        let mut draft=Draft::new(Tool::Pen);
+        draft.anchors=vec![anchor([0.,0.],[0.;2]),anchor([100.,0.],[0.;2])];
+        assert!(draft.segment_at([50.,20.],2.).is_none());
+        let (index,t)=draft.segment_at([50.,0.5],2.).unwrap();
+        draft.insert_anchor(index,t).unwrap();
+        assert!((draft.anchors[1].point[0]-50.).abs()<0.1);
+        assert_eq!(draft.anchors[1].point[1],0.);
     }
 }

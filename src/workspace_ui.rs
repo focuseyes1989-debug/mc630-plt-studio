@@ -40,8 +40,7 @@ impl A4Studio {
                     {
                         self.choose_project(ctx);
                     }
-                    ui.separator();
-                    self.recent_projects_menu(ui, ctx);
+
                 });
             });
         egui::CentralPanel::default()
@@ -51,7 +50,6 @@ impl A4Studio {
                     .inner_margin(egui::Margin::symmetric(26, 22)),
             )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading(egui::RichText::new("MC630 PLT Studio").size(28.));
                     ui.add_space(16.);
                     ui.strong("Paper presets");
@@ -78,21 +76,17 @@ impl A4Studio {
                                 preset = Some(sheet::PAPER_PRESETS.len());
                             }
                         });
-                        ui.add_space(20.);
-                        let height = ui.available_height().clamp(130., 330.);
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), height],
-                                egui::Button::new("Drop an image here or click to import")
-                                    .fill(egui::Color32::from_rgb(226, 226, 229)),
-                            )
-                            .on_hover_text("Import image (Ctrl+O)")
-                            .clicked()
-                        {
-                            self.choose_image(ctx);
-                        }
                     });
-                });
+                    ui.add_space(20.);
+                    let entries = self.recent_projects.entries.clone();
+                    if let Some(path) = self.recent_gallery.ui(ui, &entries, enabled) {
+                        self.request_action(DocumentAction::OpenProject(path), ctx);
+                    }
+                    if let Some(path) = self.recent_gallery.remove_requested.take() {
+                        if let Err(error) = self.recent_projects.remove(&path) {
+                            self.status = format!("Cannot update Recent projects: {error}");
+                        }
+                    }
             });
         if enabled {
             self.handle_dropped_artwork(ctx);

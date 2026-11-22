@@ -80,6 +80,11 @@ impl RecentProjects {
         self.entries.truncate(LIMIT);
         self.persist()
     }
+    pub fn remove(&mut self, path: &Path) -> Result<(), String> {
+        let target = key(&absolute(path));
+        self.entries.retain(|entry| key(entry) != target);
+        self.persist()
+    }
     pub fn clear(&mut self) -> Result<(), String> {
         self.entries.clear();
         self.persist()
@@ -95,6 +100,23 @@ pub fn storage_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removing_recent_keeps_project_file_and_persists_history() {
+        let root=std::env::temp_dir().join(format!("mc630-remove-recent-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let project=root.join("keep.mc630");
+        std::fs::write(&project,b"project data").unwrap();
+        let history=root.join("history.json");
+        let mut recent=RecentProjects::load(history.clone());
+        recent.remember(&project).unwrap();
+        recent.remove(&project).unwrap();
+        assert!(RecentProjects::load(history.clone()).entries.is_empty());
+        assert_eq!(std::fs::read(&project).unwrap(),b"project data");
+        std::fs::remove_file(&project).unwrap();
+        std::fs::remove_file(&history).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
     #[test]
     fn recency_deduplication_limit_and_persistence() {
         let path = std::env::temp_dir().join(format!(

@@ -1,5 +1,6 @@
 impl A4Studio {
     fn remember_recent(&mut self, path: &std::path::Path) {
+        self.recent_gallery.invalidate();
         #[cfg(not(test))]
         { self.recent_projects = crate::recent::RecentProjects::load(crate::recent::storage_path()); }
         if let Err(e) = self.recent_projects.remember(path) {
@@ -191,7 +192,11 @@ impl A4Studio {
         } else if !self.source.is_empty() {
             self.retrace(ctx);
         }
-        self.canvas_pan = egui::vec2(project.canvas_pan[0], project.canvas_pan[1]);
+        // Saved pan/zoom depend on the old viewport size. Open documents fitted
+        // to the current canvas so a previous close-up cannot land off-screen.
+        self.zoom = 1.;
+        self.canvas_pan = egui::Vec2::ZERO;
+        self.navigator_view = None;
         self.clear_selection();
         self.drag = None;
         self.duplicate_step = None;
@@ -202,6 +207,7 @@ impl A4Studio {
         self.selected_cut_shape = None;
         self.cut_shape_drag = None;
         self.camera = Default::default();
+        self.crop_edit = None;
         self.undo.clear();
         self.redo.clear();
         self.last_print = None;
