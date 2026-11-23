@@ -103,15 +103,15 @@ impl A4Studio {
             .as_secs()
             .saturating_sub(record.saved_at);
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("crash-recovery")).show(ctx,|ui|{
-            ui.set_width(480.);ui.heading("Recover your last work?");ui.add_space(8.);
+        crate::ui_theme::dialog_modal(ctx, "crash-recovery").show(ctx,|ui|{
+            ui.set_width(440.);crate::ui_theme::dialog_header(ui,"Recover your last work?",false);
             ui.label(format!("Recovered Auto Save: {label}"));
             ui.label(format!("{} - {} images. Saved about {} minutes ago.",record.project.artwork_name,record.project.settings.layout.count,age/60));
             ui.label("Restore the image, layout and settings from the latest recovery snapshot?");
             if self.autosave.offered.len()>1{ui.small(format!("{} previous sessions found. Restore uses the most recent; Discard removes these previous-session recoveries.",self.autosave.offered.len()));}
-            ui.add_space(14.);ui.horizontal(|ui|{
-                if ui.button("Restore").clicked(){choice=Some(true);}
-                if ui.button("Discard recovery").clicked(){choice=Some(false);}
+            ui.add_space(10.);ui.separator();crate::ui_theme::dialog_actions(ui,|ui|{
+                if crate::ui_theme::primary_button(ui,"Restore").clicked(){choice=Some(true);}
+                if ui.add_sized([128.,28.],egui::Button::new("Discard recovery")).clicked(){choice=Some(false);}
             });
         });
         match choice {

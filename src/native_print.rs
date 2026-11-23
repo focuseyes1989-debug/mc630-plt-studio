@@ -543,6 +543,7 @@ fn discover_printers() -> std::sync::mpsc::Receiver<Result<(Vec<String>, Option<
     rx
 }
 pub enum PrintArtwork {
+    Design(mc630_plt_studio::sheet::Layout, Option<mc630_plt_studio::sheet::CcdTrial>),
     Front {
         art: std::sync::Arc<mc630_plt_studio::sheet::Artwork>,
         layout: mc630_plt_studio::sheet::Layout,
@@ -554,6 +555,7 @@ pub enum PrintArtwork {
 impl PrintArtwork {
     fn raster(self, page: [f64; 2]) -> Result<RgbaImage, String> {
         match self {
+            Self::Design(layout,ccd)=>layout.print_design_raster_with_ccd(ccd.as_ref()),
             Self::Front { art, layout, ccd } => layout.print_raster(&art, ccd.as_ref()),
             Self::Back(data) => data.raster(page),
         }

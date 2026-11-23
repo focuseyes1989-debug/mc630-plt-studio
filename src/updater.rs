@@ -183,20 +183,30 @@ impl UpdateDialog {
         let mut close = false;
         let mut download = None;
         let mut history = false;
-        let dialog = egui::Modal::new(egui::Id::new("studio-update")).show(ctx, |ui| {
-            ui.set_width(380.);
-            ui.heading("Studio updates");
-            ui.add_space(6.);
-            ui.weak(format!("Installed  {CURRENT}"));
+        let mut open = true;
+        egui::Window::new("Studio updates")
+            .id(egui::Id::new("studio-update"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.)
+            .default_pos(ctx.screen_rect().center() - egui::vec2(205., 125.))
+            .show(ctx, |ui| {
+            ui.set_width(360.);
+            egui::Grid::new("update-versions").num_columns(2).spacing([24.,8.]).show(ui, |ui| {
+                ui.label("Installed"); ui.label(CURRENT); ui.end_row();
+                if let Some(Ok(ResultState::Current(version))) = &self.result {
+                    ui.label("Latest"); ui.label(version.to_string()); ui.end_row();
+                } else if let Some(Ok(ResultState::Available(release))) = &self.result {
+                    ui.label("Available"); ui.label(release.version.to_string()); ui.end_row();
+                    ui.label("Download"); ui.label(format!("{:.1} MB",release.size as f64/1_000_000.)); ui.end_row();
+                }
+            });
+            ui.add_space(4.);
             ui.separator();
             if self.prepared.is_some() {
                 ui.strong("Update ready");
-                ui.label("Studio will save your work, update and reopen.");
-                ui.add_space(12.);
-                if ui.button("Install and restart").clicked() {
-                    self.request_install = true;
-                    close = true;
-                }
+                ui.label("Ready to install and restart.");
             } else if self.download_pending.is_some() {
                 let total = match &self.result {
                     Some(Ok(ResultState::Available(d))) => d.size,
@@ -226,22 +236,11 @@ impl UpdateDialog {
                     Some(Ok(ResultState::NoRelease)) => {
                         ui.label("No Windows release is available yet.");
                     }
-                    Some(Ok(ResultState::Current(version))) => {
+                    Some(Ok(ResultState::Current(_))) => {
                         ui.strong("You're up to date");
-                        ui.label(format!("Latest release  {version}"));
                     }
-                    Some(Ok(ResultState::Available(release))) => {
-                        ui.strong(format!("Version {} is available", release.version));
-                        ui.weak(format!(
-                            "Windows · {:.1} MB",
-                            release.size as f64 / 1_000_000.
-                        ));
-                        ui.add_space(10.);
-                        ui.label("Download, install and restart automatically.");
-                        ui.add_space(10.);
-                        if ui.button("Update now").clicked() {
-                            download = Some(release.clone());
-                        }
+                    Some(Ok(ResultState::Available(_))) => {
+                        ui.label("An update is available.");
                     }
                     Some(Err(error)) => {
                         ui.label("Couldn't check for updates.");
@@ -255,9 +254,23 @@ impl UpdateDialog {
             }
             ui.add_space(8.);
             ui.separator();
-            ui.horizontal(|ui| {
-                history = ui.button("Release history").clicked();
-                close |= ui.button("Later").clicked();
+            crate::ui_theme::dialog_actions(ui,|ui| {
+                let ready = self.prepared.is_some();
+                let available = match &self.result {
+                    Some(Ok(ResultState::Available(release))) => Some(release.clone()),
+                    _ => None,
+                };
+                let actionable = (ready || available.is_some()) && self.download_pending.is_none();
+                if actionable {
+                    let label = if ready { "Install & restart" } else { "Update now" };
+                    if ui.add_sized([130.,28.],egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE))
+                        .fill(crate::ui_theme::ACCENT)).clicked() {
+                        if ready { self.request_install = true; close = true; }
+                        else { download = available; }
+                    }
+                }
+                close |= ui.add_sized([68.,28.],egui::Button::new(if actionable { "Later" } else { "Close" })).clicked();
+                history = ui.add_sized([104.,28.],egui::Button::new("Release history")).clicked();
             });
         });
         if let Some(release) = download {
@@ -268,7 +281,7 @@ impl UpdateDialog {
                 .err()
                 .map(|e| e.to_string());
         }
-        if close || dialog.should_close() {
+        if close || !open {
             self.open = false;
         }
     }

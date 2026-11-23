@@ -171,6 +171,7 @@ impl A4Studio {
     }
     fn install_project_prepared(&mut self,project:crate::project::Project,source:Vec<u8>,ctx:&egui::Context,art:Option<Artwork>,preview:Option<egui::ColorImage>,prepared:bool) {
         self.back_paths_cache=None;
+        self.selected_design=None;self.shape_selection.clear();self.design_drag=None;self.design_preview=Default::default();
         self.back.install(project.back);
         self.show_back = false;
         self.print_back = false;
@@ -197,6 +198,8 @@ impl A4Studio {
         self.zoom = 1.;
         self.canvas_pan = egui::Vec2::ZERO;
         self.navigator_view = None;
+        self.overflow_warning_seen = false;
+        self.overflow_warning_open = false;
         self.clear_selection();
         self.drag = None;
         self.duplicate_step = None;
@@ -263,9 +266,9 @@ impl A4Studio {
     pub fn project_io_progress(&self,ctx:&egui::Context) {
         let Some(job)=&self.io_job else{return;};
         egui::CentralPanel::default().show(ctx,|_|{});
-        egui::Modal::new(egui::Id::new("project-io-progress")).show(ctx,|ui|{
+        crate::ui_theme::dialog_modal(ctx, "project-io-progress").show(ctx,|ui|{
             ui.set_width(340.);
-            ui.heading(if job.saving{"Saving project"}else{"Opening project"});
+            crate::ui_theme::dialog_header(ui,if job.saving{"Saving project"}else{"Opening project"},false);
             ui.add(egui::Label::new(job.path.file_name().unwrap_or_default().to_string_lossy()).truncate());
             ui.add_space(10.);let (progress,stage)=job.stage();
             ui.add(crate::ui_theme::progress_bar(progress).animate(false));

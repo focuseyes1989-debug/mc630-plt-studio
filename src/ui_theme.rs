@@ -255,7 +255,7 @@ pub fn tool_indicator(ui: &mut egui::Ui, kind: Icon, label: &str) {
     response.labelled_by(ui.label(label).id);
 }
 
-fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
+pub(crate) fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
     let painter = ui.painter();
     if let Some(glyph) = windows_icon(kind)
         && ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::new("windows-icons-loaded")).unwrap_or(false))
@@ -635,12 +635,13 @@ pub fn progress_bar(progress: f32) -> egui::ProgressBar {
 
 pub fn spin_box(ui: &mut egui::Ui, value: &mut f64, step: f64, range: std::ops::RangeInclusive<f64>, suffix: &str) -> egui::Response {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 1.;
-        let mut response = ui.add(egui::DragValue::new(value).speed(step).range(range.clone())
-            .update_while_editing(false).suffix(suffix));
+        ui.spacing_mut().item_spacing.x = 2.;
+        let height=ui.spacing().interact_size.y.max(28.);
         let mut delta = 0.;
-        if ui.small_button("-").on_hover_text("Decrease").clicked() { delta -= step; }
-        if ui.small_button("+").on_hover_text("Increase").clicked() { delta += step; }
+        if ui.add_sized([28.,height],egui::Button::new("−")).on_hover_text("Decrease").clicked() { delta -= step; }
+        let mut response = ui.add_sized([50.,height],egui::DragValue::new(value).speed(step).range(range.clone())
+            .update_while_editing(false).suffix(suffix));
+        if ui.add_sized([28.,height],egui::Button::new("+")).on_hover_text("Increase").clicked() { delta += step; }
         if delta != 0. {
             let next = (*value + delta).clamp(*range.start(), *range.end());
             if next != *value { *value = next; response.mark_changed(); }
@@ -693,4 +694,96 @@ pub fn paint_pen_cursor(ctx: &egui::Context, tip: egui::Pos2, closing: bool) {
     if closing {
         painter.circle(tip+egui::vec2(20.,2.),3.,egui::Color32::WHITE,egui::Stroke::new(1_f32,egui::Color32::BLACK));
     }
+}
+
+/// Keep egui's full keyboard/mouse hit target and numeric field sizing while
+/// drawing a compact handle. egui 0.31 ties handle radius to widget height.
+pub fn small_slider(slider: egui::Slider<'_>) -> SmallSlider<'_> { SmallSlider(slider) }
+pub struct SmallSlider<'a>(egui::Slider<'a>);
+impl egui::Widget for SmallSlider<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let layer=ui.layer_id();
+        let start=ui.ctx().graphics_mut(|g|g.entry(layer).next_idx().0);
+        let response=ui.add(self.0);
+        ui.ctx().graphics_mut(|graphics| {
+            let list=graphics.entry(layer);
+            let end=list.next_idx().0;
+            for i in start..end {
+                list.mutate_shape(egui::layers::ShapeIdx(i),|shape| {
+                    if let egui::Shape::Circle(circle)=&mut shape.shape {
+                        circle.radius=5.;
+                        circle.stroke.width=1.25;
+                    }
+                });
+            }
+        });
+        response
+    }
+}
+
+#[cfg(test)]
+mod compact_slider_tests {
+    use super::*;
+    #[test]
+    fn slider_has_small_handle_and_retains_normal_control_height() {
+        let ctx=egui::Context::default();
+        let mut value=50.;
+        let mut height=0.;
+        let output=ctx.run(Default::default(),|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui| {
+                ui.spacing_mut().interact_size.y=28.;
+                height=ui.add(small_slider(egui::Slider::new(&mut value,0. ..=100.))).rect.height();
+            });
+        });
+        let circles:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Circle(c)=&s.shape{Some(c.radius)}else{None}).collect();
+        assert_eq!(circles,vec![5.]);
+        assert!(height>=28.);
+        assert_eq!(value,50.);
+    }
+}
+
+/// Lightweight preset strip: only the selected choice has a filled highlight.
+pub fn preset_buttons(ui: &mut egui::Ui, value: &mut f64, options: &[(&str,f64)]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x=8.;
+        for &(label,preset) in options {
+            if ui.selectable_label((*value-preset).abs()<1e-6,label).clicked() {
+                *value=preset;
+            }
+        }
+    });
+}
+
+/// Right-aligned footer without consuming the dialog's remaining vertical space.
+pub fn dialog_actions<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)->R)->R {
+    ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),add).inner).inner
+}
+
+/// Shared title treatment for blocking dialogs, matching the editor's light windows.
+pub fn dialog_modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::new(id))
+        .frame(egui::Frame::window(&ctx.style()).inner_margin(egui::Margin::same(14)))
+}
+
+pub fn dialog_header(ui: &mut egui::Ui, title: &str, closable: bool) -> bool {
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.), egui::Sense::hover());
+    let background = egui::Rect::from_min_max(row.min-egui::vec2(14.,14.), row.max+egui::vec2(14.,0.));
+    ui.painter().rect_filled(background, egui::CornerRadius { nw:10, ne:10, sw:0, se:0 }, egui::Color32::from_rgb(229,241,251));
+    ui.painter().line_segment([background.left_bottom(),background.right_bottom()], egui::Stroke::new(1_f32,egui::Color32::from_gray(215)));
+    ui.painter().text(row.center()-egui::vec2(0.,4.),egui::Align2::CENTER_CENTER,title,egui::FontId::proportional(16.),egui::Color32::from_gray(32));
+    let mut closed=false;
+    if closable {
+        let rect=egui::Rect::from_center_size(egui::pos2(row.right()-8.,row.center().y-4.),egui::vec2(24.,24.));
+        let response=ui.interact(rect,ui.id().with("dialog-close"),egui::Sense::click());
+        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Close dialog"));
+        let stroke=egui::Stroke::new(1.7_f32,ACCENT);
+        for direction in [-1.,1.] {ui.painter().line_segment([rect.center()+egui::vec2(-4.,-4.*direction),rect.center()+egui::vec2(4.,4.*direction)],stroke);}
+        closed=response.on_hover_text("Close").clicked();
+    }
+    ui.add_space(6.);
+    closed
+}
+
+pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add_sized([84.,28.],egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE)).fill(ACCENT))
 }

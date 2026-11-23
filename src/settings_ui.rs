@@ -12,6 +12,7 @@ impl A4Studio {
         layout.image_groups.clear();
         layout.guides = Default::default();
         layout.manual_cut_paths.clear();
+        layout.design_shapes.clear();
         layout.image_cut_paths.clear();
         layout.use_manual_cut_paths = false;
         if !layout.image_tiles.is_empty() {
@@ -163,13 +164,16 @@ egui::ComboBox::from_id_salt("settings-paper").selected_text(self.layout.paper_l
                     ui.horizontal(|ui|{ui.label("Paper height");ui.add(self.unit.distance(&mut self.layout.page_height).range(50.0..=2000.));});
 }
 3 => {
+let mut column_gap=self.layout.column_gap;
+let mut row_gap=self.layout.row_gap;
 egui::Grid::new("settings-layout").num_columns(2).show(ui,|ui| {
                         ui.label("Image width");ui.add(self.unit.distance(&mut self.layout.width).range(1.0..=self.layout.page_width));ui.end_row();
                         ui.label("Image height");ui.add(self.unit.distance(&mut self.layout.height).range(1.0..=self.layout.page_height));ui.end_row();
                         ui.label("Copies");ui.add_enabled(self.layout.image_tiles.is_empty(), egui::DragValue::new(&mut self.layout.count).range(1..=1000));ui.end_row();
-                        ui.label("Column spacing");ui.add(self.unit.distance(&mut self.layout.column_gap).range(0.0..=100.));ui.end_row();
-                        ui.label("Row spacing");ui.add(self.unit.distance(&mut self.layout.row_gap).range(0.0..=100.));ui.end_row();
+                        ui.label("Column spacing");ui.add(self.unit.distance(&mut column_gap).range(0.0..=100.));ui.end_row();
+                        ui.label("Row spacing");ui.add(self.unit.distance(&mut row_gap).range(0.0..=100.));ui.end_row();
                     });
+                    if column_gap!=self.layout.column_gap || row_gap!=self.layout.row_gap { self.apply_layout_spacing(column_gap,row_gap); }
                     ui.separator();
                     self.edit_margin_fields(ui);
                     ui.checkbox(&mut self.lock,"Lock proportions for resize");
@@ -179,19 +183,18 @@ egui::ComboBox::from_id_salt("settings-shape").selected_text(self.cut_shape.labe
                         for shape in [sheet::CutShape::AlphaOutline,sheet::CutShape::ImageFrame,sheet::CutShape::PlainBackgroundObject,sheet::CutShape::Ellipse] {retrace|=ui.selectable_value(&mut self.cut_shape,shape,shape.label()).changed();}
                     });
                     retrace|=ui.checkbox(&mut self.remove_white,"Remove white background").changed();
-                    retrace|=ui.add(egui::Slider::new(&mut self.threshold,180..=254).text("White threshold")).changed();
-                    retrace|=ui.add(egui::Slider::new(&mut self.background_tolerance,0..=100).text("Background tolerance")).changed();
+                    retrace|=ui.add(crate::ui_theme::small_slider(egui::Slider::new(&mut self.threshold,180..=254).text("White threshold"))).changed();
+                    retrace|=ui.add(crate::ui_theme::small_slider(egui::Slider::new(&mut self.background_tolerance,0..=100).text("Background tolerance"))).changed();
                     retrace|=ui.checkbox(&mut self.print_without_background,"Print without background").changed();
 }
 5 => {
-ui.horizontal(|ui|{ui.label("Outline smoothing");ui.add(self.unit.slider(&mut self.layout.smoothing,0.0..=4.0));});
+ui.horizontal(|ui|{ui.label("Outline smoothing");ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing,0.0..=4.0)));});
                     ui.horizontal(|ui|{ui.label("Outline distance");ui.add(self.unit.distance(&mut self.layout.contour_offset).range(-5.0..=5.0));});
                     ui.checkbox(&mut self.layout.cut_inner_holes,"Cut inner holes");ui.checkbox(&mut self.show_cut,"Show cut outlines");
 }
 6 => {
 ui.checkbox(&mut self.ccd_trial,"CCD camera - four dots");
-                    ui.horizontal(|ui|{ui.label("Dot diameter");ui.add(self.unit.distance(&mut self.ccd_profile.diameter).range(1.0..=10.0));});
-                    ui.horizontal(|ui|{ui.label("Dot centre gap");ui.add(self.unit.distance(&mut self.ccd_profile.inset).range(5.0..=30.0));});
+                    self.dot_settings_fields(ui);
                     ui.add_enabled_ui(!self.ccd_trial,|ui| {
                         ui.horizontal(|ui|{ui.label("X offset");ui.add(self.unit.distance(&mut self.layout.offset_x).range(-self.layout.page_width..=self.layout.page_width));});
                         ui.horizontal(|ui|{ui.label("Y offset");ui.add(self.unit.distance(&mut self.layout.offset_y).range(-self.layout.page_height..=self.layout.page_height));});
@@ -202,8 +205,8 @@ ui.checkbox(&mut self.ccd_trial,"CCD camera - four dots");
 }
 7 => {
 ui.checkbox(&mut self.rulers,"Show rulers");ui.checkbox(&mut self.grid,"Show grid");
-                    ui.add(egui::Slider::new(&mut self.zoom,0.5..=16.0).custom_formatter(|v,_|format!("{:.0}%",v*100.)).text("Zoom"));
-                    ui.horizontal(|ui| { ui.label("Cut line color"); ui.color_edit_button_srgba(&mut self.contour_color); });
+                    ui.add(crate::ui_theme::small_slider(egui::Slider::new(&mut self.zoom,0.5..=16.0).custom_formatter(|v,_|format!("{:.0}%",v*100.)).text("Zoom")));
+                    ui.horizontal(|ui| { ui.label("Cut line color"); crate::color_dialog::button(ui, "Cut line color", &mut self.contour_color); });
                     if icon_button(ui, Icon::Fit, "Fit page / reset view"){self.camera.fit(ctx);}
 }
 8 => {
@@ -217,16 +220,14 @@ if icon_button(ui, Icon::Print, "Open Print dialog") {
                     });
                 });
                 ui.separator();
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, Icon::Close, "Close settings") {
-                        close = true;
-                    }
-                    if icon_button(ui, Icon::Save, "Save settings") {
+                crate::ui_theme::dialog_actions(ui, |ui| {
+                    if crate::ui_theme::primary_button(ui,"Save settings").clicked() {
                         self.status = match self.preferences().save() {
                             Ok(()) => "Settings saved.".into(),
                             Err(error) => format!("Cannot save settings: {error}"),
                         };
                     }
+                    close |= ui.add_sized([80.,28.],egui::Button::new("Close")).clicked();
                 });
             });
         ctx.data_mut(|data| data.insert_temp(tab_id, tab));

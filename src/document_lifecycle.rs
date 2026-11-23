@@ -108,10 +108,9 @@ impl A4Studio {
             return;
         }
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::new("unsaved-project")).show(ctx, |ui| {
+        let modal = crate::ui_theme::dialog_modal(ctx, "unsaved-project").show(ctx, |ui| {
             ui.set_width(306.);
-            ui.heading("Save changes?");
-            ui.add_space(8.);
+            if crate::ui_theme::dialog_header(ui,"Save changes?",true) {choice=Some(UnsavedChoice::Cancel);}
             let name = self
                 .project_path
                 .as_ref()
@@ -120,16 +119,11 @@ impl A4Studio {
                 .unwrap_or_else(|| "Untitled project".into());
             ui.add(egui::Label::new(egui::RichText::new(name).weak()).truncate());
             ui.add_space(10.);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_sized([80., 28.], egui::Button::new("Cancel")).clicked() {
-                    choice = Some(UnsavedChoice::Cancel);
-                }
-                if ui.add_sized([90., 28.], egui::Button::new("Don't Save")).clicked() {
-                    choice = Some(UnsavedChoice::Discard);
-                }
-                if ui.add_sized([80., 28.], egui::Button::new("Save").fill(ui.visuals().selection.bg_fill)).clicked() {
-                    choice = Some(UnsavedChoice::Save);
-                }
+            ui.separator();
+            crate::ui_theme::dialog_actions(ui, |ui| {
+                if crate::ui_theme::primary_button(ui,"Save").clicked() {choice=Some(UnsavedChoice::Save);}
+                if ui.add_sized([90.,28.],egui::Button::new("Don't Save")).clicked() {choice=Some(UnsavedChoice::Discard);}
+                if ui.add_sized([80.,28.],egui::Button::new("Cancel")).clicked() {choice=Some(UnsavedChoice::Cancel);}
             });
         });
         if modal.should_close() {

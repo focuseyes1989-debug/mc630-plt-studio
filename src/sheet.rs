@@ -75,7 +75,7 @@ impl Default for CcdTrial {
 impl CcdTrial {
     /// Dot centers surround the occupied image frames, not the A4 sheet.
     pub fn marks(&self, layout: &Layout) -> [Point; 4] {
-        let items: Vec<_> = layout
+        let mut items: Vec<_> = layout
             .items()
             .unwrap_or_default()
             .into_iter()
@@ -83,6 +83,15 @@ impl CcdTrial {
             .filter(|(i, _)| !layout.hidden_images.contains(i))
             .map(|(_, placement)| placement)
             .collect();
+        for shape in &layout.design_shapes {
+            if shape.path.is_empty() {continue;}
+            let x0=shape.path.iter().map(|p|p[0]).fold(f64::INFINITY,f64::min);
+            let y0=shape.path.iter().map(|p|p[1]).fold(f64::INFINITY,f64::min);
+            let x1=shape.path.iter().map(|p|p[0]).fold(f64::NEG_INFINITY,f64::max);
+            let y1=shape.path.iter().map(|p|p[1]).fold(f64::NEG_INFINITY,f64::max);
+            let border=if shape.print {shape.stroke_width/2.}else{0.};
+            items.push(Placement{x:x0-border,y:y0-border,width:(x1-x0+border*2.).max(0.01),height:(y1-y0+border*2.).max(0.01),orientation:Default::default()});
+        }
         if items.is_empty() {
             return [[0.; 2]; 4];
         }
@@ -123,7 +132,7 @@ impl CcdTrial {
         layout: &Layout,
         art: &Artwork,
     ) -> Result<Vec<Vec<Point>>, String> {
-        if !layout.has_visible_images() {
+        if !layout.has_visible_images() && layout.design_shapes.is_empty() {
             return Err("Show at least one image before exporting.".into());
         }
         if !self.diameter.is_finite()
@@ -786,6 +795,34 @@ fn smooth_path(path: &[Point], amount: f64, closed: bool) -> Vec<Point> {
     }
 }
 
+// Recognize genuinely polygonal contours within source-pixel uncertainty.
+// Curves need many short segments at this tolerance and are left untouched.
+fn straighten_polygon(path:&[Point],pixel_size:f64)->Vec<Point> {
+    if path.len()<4 || path.first()!=path.last() {return path.to_vec();}
+    let ring=&path[..path.len()-1];
+    let min=[ring.iter().map(|p|p[0]).fold(f64::INFINITY,f64::min),ring.iter().map(|p|p[1]).fold(f64::INFINITY,f64::min)];
+    let max=[ring.iter().map(|p|p[0]).fold(f64::NEG_INFINITY,f64::max),ring.iter().map(|p|p[1]).fold(f64::NEG_INFINITY,f64::max)];
+    let tolerance=(pixel_size*1.5).min(0.2).min((max[0]-min[0]).min(max[1]-min[1])*0.003);
+    if tolerance<=1e-8 {return path.to_vec();}
+    let split=(1..ring.len()).max_by(|&a,&b| {
+        let distance=|i:usize|(ring[i][0]-ring[0][0]).hypot(ring[i][1]-ring[0][1]);
+        distance(a).total_cmp(&distance(b))
+    }).unwrap();
+    let mut simple=vec![ring[0]];
+    simplify(&path[..=split],tolerance,&mut simple);
+    simplify(&path[split..],tolerance,&mut simple);
+    if !(4..=13).contains(&simple.len()) {return path.to_vec();}
+    let n=simple.len()-1;
+    for i in 0..n {
+        let a=simple[(i+n-1)%n];let b=simple[i];let c=simple[(i+1)%n];
+        let u=[b[0]-a[0],b[1]-a[1]];let v=[c[0]-b[0],c[1]-b[1]];
+        if v[0].hypot(v[1])<tolerance*12. {return path.to_vec();}
+        let turn=(u[0]*v[1]-u[1]*v[0]).atan2(u[0]*v[0]+u[1]*v[1]).abs();
+        if turn<25_f64.to_radians() {return path.to_vec();}
+    }
+    simple
+}
+
 // Detect turns that stay sharp at two distances, then smooth only between them.
 fn smooth_mixed_contour(path: &[Point], amount: f64) -> Vec<Point> {
     if path.len() < 4 {
@@ -1144,6 +1181,16 @@ impl Placement {
     }
 }
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DesignShape {
+    pub path: Vec<Point>,
+    pub fill: Option<[u8;4]>,
+    pub stroke: [u8;4],
+    pub stroke_width: f64,
+    pub print: bool,
+    pub cut: bool,
+}
+
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub page_width: f64,
     pub page_height: f64,
@@ -1170,6 +1217,8 @@ pub struct Layout {
     /// Hand-drawn paths in page millimetres, with Y measured from the top.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_cut_paths: Vec<Vec<Point>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub design_shapes: Vec<DesignShape>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub image_cut_paths: std::collections::BTreeMap<usize, Vec<Vec<Point>>>,
     #[serde(default)]
@@ -1208,6 +1257,7 @@ impl Default for Layout {
             image_groups: Default::default(),
             guides: Default::default(),
             manual_cut_paths: vec![],
+            design_shapes: vec![],
             image_cut_paths: Default::default(),
             use_manual_cut_paths: false,
             margin: 15.,
@@ -1244,6 +1294,12 @@ impl Layout {
     }
 
     pub fn validate_manual_cut_paths(&self) -> Result<(), String> {
+        if self.design_shapes.len()>100 || self.design_shapes.iter().map(|s|s.path.len()).sum::<usize>()>100_000
+            || self.design_shapes.iter().any(|s| !(2..=4000).contains(&s.path.len()) || !s.stroke_width.is_finite()
+                || !(0. ..=20.).contains(&s.stroke_width) || (!s.print && !s.cut)
+                || s.path.iter().flatten().any(|v|!v.is_finite() || v.abs()>100_000.)) {
+            return Err("Invalid design shapes.".into());
+        }
         if self.image_cut_paths.keys().any(|i| *i>=self.count)
             || self.image_cut_paths.values().flatten().count()>100
             || self.image_cut_paths.values().flatten().map(Vec::len).sum::<usize>()>10_000
@@ -1265,7 +1321,7 @@ impl Layout {
         }
         Ok(())
     }
-    pub fn has_manual_cuts(&self) -> bool { !self.manual_cut_paths.is_empty() || self.image_cut_paths.values().any(|paths| !paths.is_empty()) }
+    pub fn has_manual_cuts(&self) -> bool { self.design_shapes.iter().any(|s|s.cut) || !self.manual_cut_paths.is_empty() || self.image_cut_paths.values().any(|paths| !paths.is_empty()) }
     pub fn link_cut_paths(&mut self, index: usize, paths: Vec<Vec<Point>>) -> Result<(), String> {
         let items = self.editor_items()?;
         let item = items.get(index).ok_or("Select an image to link the cutline.")?;
@@ -1287,14 +1343,35 @@ impl Layout {
             self.image_cut_paths.iter().find_map(|(&owner, paths)| {
                 let same = if self.image_tiles.is_empty() {true}
                     else {self.image_tiles.get(index).zip(self.image_tiles.get(owner)).is_some_and(|(a,b)| a==b)};
-                same.then_some(paths)
+                (same && !paths.is_empty()).then_some(paths)
             })
         })
+    }
+
+    /// Detach one placement without removing outlines inherited by its other copies.
+    /// Bake the offset, but leave smoothing to the usual page-cut pipeline.
+    pub fn unlink_image_cut_paths(&mut self,index:usize)->Result<(),String> {
+        if self.image_cut_paths_for(index).is_none_or(|paths|paths.is_empty()) {
+            return Err("This image has no linked manual cutline.".into());
+        }
+        let mut isolated=self.clone();
+        isolated.manual_cut_paths.clear();isolated.design_shapes.clear();isolated.smoothing=0.;
+        isolated.hidden_images=(0..self.count).filter(|i|*i!=index).collect();
+        let detached=isolated.manual_page_cut_paths()?;
+        let mut next=self.clone();
+        next.image_cut_paths=(0..self.count).filter_map(|i|self.image_cut_paths_for(i).cloned().map(|paths|(i,paths))).collect();
+        // An explicit empty entry prevents the detached placement from inheriting
+        // another copy's template again.
+        next.image_cut_paths.insert(index,vec![]);
+        next.manual_cut_paths.extend(detached);
+        next.validate_manual_cut_paths()?;
+        *self=next;Ok(())
     }
     pub fn manual_page_cut_paths(&self) -> Result<Vec<Vec<Point>>, String> {
         self.validate_manual_cut_paths()?;
         if !self.contour_offset.is_finite() || self.contour_offset.abs()>5. {return Err("Cut border must be between -5 and +5 mm.".into());}
         let mut paths=self.manual_cut_paths.clone();
+
         if !self.image_cut_paths.is_empty() {
             let items=self.editor_items()?;
             for (index,item) in items.iter().enumerate() {
@@ -1327,11 +1404,64 @@ impl Layout {
                     else {smooth_path(path,self.smoothing,closed)};
             }
         }
+        paths.extend(self.design_shapes.iter().filter(|s|s.cut).map(|s|s.path.clone()));
         if paths.len()>100 || paths.iter().map(Vec::len).sum::<usize>()>100_000 {return Err("Too many manual cutline points.".into());}
         if paths.iter().flatten().any(|p|!p[0].is_finite() || !p[1].is_finite() || p[0]< -1e-7 || p[1]< -1e-7 || p[0]>self.page_width+1e-7 || p[1]>self.page_height+1e-7) {
             return Err("Linked cutline is outside the page. Adjust the image or Outline distance.".into());
         }
         Ok(paths)
+    }
+    pub fn has_print_designs(&self)->bool {self.design_shapes.iter().any(|s|s.print)}
+    pub fn design_svg_paths(&self)->String {
+        let mut svg=String::new();
+        for shape in self.design_shapes.iter().filter(|s|s.print) {
+            if shape.path.len()<2 {continue;}
+            let closed=shape.path.first()==shape.path.last();
+            let mut data=format!("M {} {}",shape.path[0][0],shape.path[0][1]);
+            for p in shape.path.iter().skip(1) {data.push_str(&format!(" L {} {}",p[0],p[1]));}
+            if closed {data.push_str(" Z");}
+            let fill=shape.fill.filter(|_|closed).map_or("none".into(),|c|format!("rgb({},{},{})",c[0],c[1],c[2]));
+            let opacity=shape.fill.map_or(1.,|c|c[3] as f64/255.);
+            let c=shape.stroke;
+            svg.push_str(&format!(r#"<path d="{}" fill="{}" fill-opacity="{}" stroke="rgb({},{},{})" stroke-opacity="{}" stroke-width="{}" stroke-linejoin="round" stroke-linecap="round"/>"#,
+                data,fill,opacity,c[0],c[1],c[2],c[3] as f64/255.,shape.stroke_width));
+        }
+        svg
+    }
+    pub fn render_designs(&self,width:u32,height:u32)->Result<RgbaImage,String> {
+        self.render_design_region(width,height,[0.,0.,self.page_width,self.page_height])
+    }
+    pub fn render_design_region(&self,width:u32,height:u32,region:[f64;4])->Result<RgbaImage,String> {
+        self.validate_manual_cut_paths()?;
+        if region.iter().any(|v|!v.is_finite()) || region[2]<=0. || region[3]<=0. {return Err("Invalid design preview region.".into());}
+        if width==0 || height==0 || width as u64*height as u64>80_000_000 {return Err("Design preview is too large.".into());}
+        let svg=format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="{} {} {} {}" preserveAspectRatio="none">{}</svg>"#,width,height,region[0],region[1],region[2],region[3],self.design_svg_paths());
+        let tree=usvg::Tree::from_str(&svg,&usvg::Options::default()).map_err(|e|e.to_string())?;
+        let mut pixmap=resvg::tiny_skia::Pixmap::new(width,height).ok_or("Cannot allocate design preview")?;
+        resvg::render(&tree,resvg::tiny_skia::Transform::identity(),&mut pixmap.as_mut());
+        let mut result=RgbaImage::new(width,height);
+        for (target,pixel) in result.pixels_mut().zip(pixmap.pixels()) {
+            let c=pixel.demultiply();*target=image::Rgba([c.red(),c.green(),c.blue(),c.alpha()]);
+        }
+        Ok(result)
+    }
+    pub fn design_only_artwork(&self)->Result<(Self,Artwork),String> {
+        let points:Vec<_>=self.design_shapes.iter().flat_map(|s|s.path.iter().copied()).collect();
+        if points.is_empty() {return Err("Draw a design first.".into());}
+        let x0=points.iter().map(|p|p[0]).fold(f64::INFINITY,f64::min);
+        let y0=points.iter().map(|p|p[1]).fold(f64::INFINITY,f64::min);
+        let x1=points.iter().map(|p|p[0]).fold(f64::NEG_INFINITY,f64::max);
+        let y1=points.iter().map(|p|p[1]).fold(f64::NEG_INFINITY,f64::max);
+        let mut layout=self.clone();layout.count=1;layout.custom.clear();layout.image_tiles.clear();layout.hidden_images.clear();layout.image_cut_paths.clear();
+        layout.width=(x1-x0).max(1.);layout.height=(y1-y0).max(1.);layout.use_manual_cut_paths=true;
+        layout.custom.insert(0,Placement{x:x0,y:y0,width:layout.width,height:layout.height,orientation:Default::default()});
+        let art=Artwork{pixels:RgbaImage::new(1,1),outlines:vec![],holes:vec![],tiles:vec![],ellipse_bounds:None};
+        Ok((layout,art))
+    }
+    pub fn print_design_raster(&self)->Result<RgbaImage,String> {self.print_design_raster_with_ccd(None)}
+    pub fn print_design_raster_with_ccd(&self,ccd:Option<&CcdTrial>)->Result<RgbaImage,String> {
+        let (layout,art)=self.design_only_artwork()?;
+        layout.print_raster(&art,ccd)
     }
     pub fn has_visible_images(&self) -> bool {
         (0..self.count).any(|index| !self.hidden_images.contains(&index))
@@ -1482,7 +1612,11 @@ impl Layout {
         if !self.smoothing.is_finite() || !(0.0..=4.0).contains(&self.smoothing) {
             return Err("Smoothing must be between 0 and 4 mm.".into());
         }
-        let preserve_corners = self.smoothing > 0. && self.preserve_corners;
+        let preserve_corners = self.preserve_corners;
+        if preserve_corners {
+            let pixel=(self.width/art.pixels.width().max(1) as f64).max(self.height/art.pixels.height().max(1) as f64);
+            for path in original.iter_mut().chain(holes.iter_mut()) {*path=straighten_polygon(path,pixel);}
+        }
         if self.smoothing > 0. && (self.contour_offset == 0. || preserve_corners) {
             for path in original.iter_mut().chain(holes.iter_mut()) {
                 *path = if preserve_corners {
@@ -1589,7 +1723,7 @@ impl Layout {
     /// A4 artwork raster for direct Windows printing. No cut lines or origin labels.
     /// The same millimetre placements and registration geometry as print_html/pair.
     pub fn print_raster(&self, a: &Artwork, ccd: Option<&CcdTrial>) -> Result<RgbaImage, String> {
-        if !self.has_visible_images() {
+        if !self.has_visible_images() && !self.has_print_designs() {
             return Err("Show at least one image before printing.".into());
         }
         let items = self.items()?;
@@ -1621,6 +1755,10 @@ impl Layout {
                 .entry(key)
                 .or_insert_with(|| item.orientation.raster(&a.at(i).pixels, key.0, key.1));
             image::imageops::overlay(&mut page, raster, mm(item.x) as i64, mm(item.y) as i64);
+        }
+        if self.has_print_designs() {
+            let overlay=self.render_designs(page.width(),page.height())?;
+            image::imageops::overlay(&mut page,&overlay,0,0);
         }
         let mut rect = |x: f64, y: f64, w: f64, h: f64| {
             for py in mm(y)..mm(y + h).min(page.height()) {
@@ -1864,25 +2002,37 @@ impl Layout {
     pub fn items(&self) -> Result<Vec<Placement>, String> {
         self.resolved_items(false)
     }
-    /// Editing preview may show a single oversized image without changing its size.
-    /// Production output continues to use `items` and its page validation.
+    /// Keep all valid artwork visible while editing an overflowing layout.
+    /// Production output still uses `items` and its strict page validation.
     pub fn editor_items(&self) -> Result<Vec<Placement>, String> {
         match self.items() {
             Ok(items) => Ok(items),
             Err(error) => {
-                self.capacity()?;
-                if self.count != 1 { return Err(error); }
-                let [left, _, top, _] = self.margins();
-                let item = self.custom.get(&0).copied().unwrap_or(Placement {
-                    x: left, y: top, width: self.width, height: self.height,
-                    orientation: Default::default(),
+                let (cols, _) = self.capacity()?;
+                if !(1..=1000).contains(&self.count) { return Err(error); }
+                let [left,right,top,_] = self.margins();
+                let fitting = if self.custom.is_empty() {Vec::new()} else {self.resolved_items(true).unwrap_or_default()};
+                let prototype=self.custom.iter().next_back().map(|(_,p)|*p).unwrap_or(Placement {
+                    x:left,y:top,width:self.width,height:self.height,orientation:Default::default(),
                 });
-                if [item.x, item.y, item.width, item.height].iter().any(|v| !v.is_finite())
-                    || item.width < 1. || item.height < 1. || !item.orientation.valid()
-                    || item.x < 0. || item.y < 0. {
-                    return Err(error);
-                }
-                Ok(vec![item])
+                let valid=|p:&Placement| [p.x,p.y,p.width,p.height].iter().all(|v|v.is_finite() && v.abs()<1_000_000.)
+                    && p.width>=1. && p.height>=1. && p.orientation.valid();
+                if !valid(&prototype) || self.custom.values().any(|p|!valid(p)) {return Err(error);}
+                let overflow_top=fitting.iter().chain(self.custom.values()).map(|p|p.y+p.height).fold(top,f64::max)+self.row_gap;
+                let overflow_cols=((self.page_width-left-right+self.column_gap)/(prototype.width+self.column_gap)).floor().max(1.) as usize;
+                let columns=cols.max(1);
+                Ok((0..self.count).map(|i| {
+                    if let Some(p)=self.custom.get(&i) {return *p;}
+                    if let Some(p)=fitting.get(i) {return *p;}
+                    if self.custom.is_empty() {
+                        Placement{x:left+(i%columns) as f64*(self.width+self.column_gap),
+                            y:top+(i/columns) as f64*(self.height+self.row_gap),width:self.width,height:self.height,orientation:Default::default()}
+                    } else {
+                        let extra=i.saturating_sub(fitting.len());
+                        Placement{x:left+(extra%overflow_cols) as f64*(prototype.width+self.column_gap),
+                            y:overflow_top+(extra/overflow_cols) as f64*(prototype.height+self.row_gap),..prototype}
+                    }
+                }).collect())
             }
         }
     }
@@ -1972,6 +2122,7 @@ impl Layout {
         for outlines in groups.into_values() {
             paths.push(group_cut_outline(outlines)?);
         }
+        paths.extend(self.design_shapes.iter().filter(|s|s.cut).map(|s|s.path.clone()));
         Ok(paths)
     }
     pub fn cut_paths(&self, a: &Artwork) -> Result<Vec<Vec<Point>>, String> {
@@ -2045,7 +2196,7 @@ impl Layout {
         Ok(s)
     }
     pub fn print_html(&self, a: &Artwork) -> Result<String, String> {
-        if !self.has_visible_images() {
+        if !self.has_visible_images() && !self.has_print_designs() {
             return Err("Show at least one image before printing or exporting.".into());
         }
         let mut encoded_images = HashMap::new();
@@ -2081,6 +2232,7 @@ impl Layout {
                     xx - x, xy - y, yx - x, yy - y, p.x + x, p.y + y).unwrap();
             }
         }
+        s.push_str(&self.design_svg_paths());
         for (x, y) in self.manual_marks() {
             write!(s,"<path d=\"M{},{}h4 M{},{}v4\" fill=\"none\" stroke=\"black\" stroke-width=\"0.2\"/>",x-2.,y,x,y-2.).unwrap();
         }
@@ -2457,6 +2609,7 @@ mod tests {
         let art = sample();
         let base = Layout {
             contour_offset: 1.,
+            preserve_corners: false,
             count: 1,
             ..Default::default()
         };
@@ -3409,7 +3562,7 @@ mod oversized_preview_tests {
         assert_eq!((items[0].width, items[0].height), (350., 420.));
         assert!(layout.items().is_err());
         let repeated = Layout { count: 2, ..layout };
-        assert!(repeated.editor_items().is_err());
+        assert_eq!(repeated.editor_items().unwrap().len(),2);
     }
 }
 
@@ -3553,5 +3706,137 @@ mod tiled_repeat_tests {
         assert_eq!(shrink.image_cut_paths.len(),2);
         assert_eq!(shrink.manual_page_cut_paths().unwrap().len(),2);
         assert!(shrink.with_copy_count(1000).is_err());
+    }
+}
+
+#[cfg(test)]
+mod overflow_recovery_tests {
+    use super::*;
+    #[test]
+    fn overflowing_six_copies_stay_visible_at_original_size() {
+        let mut layout=Layout{count:6,width:80.,height:130.,..Default::default()};
+        assert!(layout.items().is_err());
+        let items=layout.editor_items().unwrap();
+        assert_eq!(items.len(),6);
+        assert!(items.iter().all(|p|p.width==80. && p.height==130.));
+        assert!(items.iter().any(|p|p.y+p.height>layout.page_height));
+        layout.custom=items.into_iter().enumerate().collect();
+        layout.custom.get_mut(&0).unwrap().x=-20.;
+        assert_eq!(layout.editor_items().unwrap()[0].x,-20.);
+        assert!(layout.items().is_err());
+        layout.custom.get_mut(&0).unwrap().width=f64::NAN;
+        assert!(layout.editor_items().is_err());
+    }
+}
+
+#[cfg(test)]
+mod design_print_tests {
+    use super::*;
+    fn shape(print:bool,cut:bool)->DesignShape {DesignShape{path:vec![[20.,20.],[60.,20.],[60.,60.],[20.,60.],[20.,20.]],fill:Some([255,0,0,255]),stroke:[0,0,0,255],stroke_width:0.4,print,cut}}
+    #[test]
+    fn design_fill_stroke_and_cut_flags_are_separate_and_persisted() {
+        let mut layout=Layout{count:1,..Default::default()};
+        layout.design_shapes.push(shape(true,false));
+        let pixels=layout.render_designs(210,297).unwrap();
+        assert_eq!(pixels.get_pixel(30,30).0,[255,0,0,255]);
+        assert_eq!(pixels.get_pixel(10,10).0,[0,0,0,0]);
+        assert!(layout.manual_design_plt().is_err());
+        layout.design_shapes.push(shape(false,true));
+        assert_eq!(layout.manual_design_plt().unwrap().matches("PD").count(),4);
+        let restored:Layout=serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert!(restored.design_shapes==layout.design_shapes);
+        let raster=layout.print_design_raster().unwrap();
+        let p=(30_f64/25.4*300.).round() as u32;
+        assert_eq!(raster.get_pixel(p,p).0,[255,0,0,255]);
+        layout.design_shapes[0].print=false;
+        assert!(!layout.design_svg_paths().contains("<path"));
+    }
+}
+
+#[cfg(test)]
+mod design_export_tests {
+    use super::*;
+    #[test]
+    fn standalone_print_cut_svg_ccd_and_raster_share_shape_geometry() {
+        let mut layout=Layout::default();
+        layout.design_shapes.push(DesignShape{path:vec![[30.,30.],[70.,30.],[70.,70.],[30.,70.],[30.,30.]],fill:Some([0,150,0,255]),stroke:[0,0,0,255],stroke_width:0.4,print:true,cut:true});
+        let (standalone,art)=layout.design_only_artwork().unwrap();
+        let html=standalone.print_html(&art).unwrap();
+        assert!(html.contains("rgb(0,150,0)"));
+        assert_eq!(standalone.page_cut_paths(&art).unwrap()[0],layout.design_shapes[0].path);
+        let ccd=CcdTrial::default();
+        let (ccd_html,plt)=ccd.pair(&standalone,&art).unwrap();
+        assert!(ccd_html.contains("rgb(0,150,0)"));
+        assert!(plt.contains("CT1"));
+        let raster=layout.print_design_raster_with_ccd(Some(&ccd)).unwrap();
+        let p=(50_f64/25.4*300.).round() as u32;
+        assert_eq!(raster.get_pixel(p,p).0,[0,150,0,255]);
+        let restored:Layout=serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert_eq!(restored.design_svg_paths(),layout.design_svg_paths());
+    }
+}
+
+#[cfg(test)]
+mod design_region_tests {
+    use super::*;
+    #[test]
+    fn zoom_region_renders_original_geometry_at_requested_resolution() {
+        let mut layout=Layout::default();
+        layout.design_shapes.push(DesignShape {path:vec![[20.,20.],[40.,20.],[40.,40.],[20.,40.],[20.,20.]],fill:Some([0,103,192,255]),stroke:[0,0,0,255],stroke_width:0.3,print:true,cut:false});
+        let pixels=layout.render_design_region(800,800,[10.,10.,40.,40.]).unwrap();
+        assert_eq!(pixels.get_pixel(400,400).0,[0,103,192,255]);
+        assert_eq!(pixels.get_pixel(50,50).0,[0,0,0,0]);
+        assert_eq!(pixels.get_pixel(700,400).0,[0,0,0,0]);
+        assert!(layout.render_design_region(50,50,[0.,0.,0.,10.]).is_err());
+        assert!(layout.render_design_region(50,50,[f64::NAN,0.,10.,10.]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sharp_polygon_tests {
+    use super::*;
+    #[test]
+    fn polygon_cleanup_removes_pixel_tip_kinks_but_keeps_curves() {
+        let triangle=vec![[0.,40.],[59.96,0.04],[60.,0.05],[60.04,0.1],[60.,40.],[0.,40.]];
+        let clean=straighten_polygon(&triangle,0.1);
+        assert_eq!(clean.len(),4);
+        assert_eq!(clean.first(),clean.last());
+        let mut circle:Vec<_>=(0..180).map(|i| {let a=i as f64*std::f64::consts::TAU/180.;[30.+20.*a.cos(),30.+20.*a.sin()]}).collect();
+        circle.push(circle[0]);
+        assert_eq!(straighten_polygon(&circle,0.1),circle);
+    }
+    #[test]
+    fn sharp_corner_offset_works_when_smoothing_is_off() {
+        let art=Artwork {pixels:RgbaImage::new(400,400),outlines:vec![vec![[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9],[0.1,0.1]]],holes:vec![],tiles:vec![],ellipse_bounds:None};
+        let layout=Layout {width:40.,height:40.,count:1,contour_offset:1.,smoothing:0.,preserve_corners:true,..Default::default()};
+        let sharp=layout.outline_mm(&art).unwrap();
+        assert_eq!(sharp[0].len(),5);
+        assert!(sharp[0].iter().all(|p| (p[0]-3.).abs()<1e-6 || (p[0]-37.).abs()<1e-6));
+        let round=Layout {preserve_corners:false,..layout}.outline_mm(&art).unwrap();
+        assert!(round[0].len()>sharp[0].len());
+    }
+}
+
+#[cfg(test)]
+mod unlink_tests {
+    use super::*;
+    #[test]
+    fn unlink_preserves_position_rotation_offset_and_other_copy_links() {
+        let mut layout=Layout {count:2,width:40.,height:40.,smoothing:0.,contour_offset:0.5,use_manual_cut_paths:true,..Default::default()};
+        layout.custom.insert(0,Placement {x:20.,y:20.,width:40.,height:40.,orientation:Default::default()}.with_rotation(90.));
+        layout.custom.insert(1,Placement {x:90.,y:20.,width:40.,height:40.,orientation:Default::default()});
+        layout.link_cut_paths(0,vec![vec![[25.,25.],[55.,25.],[55.,55.],[25.,55.],[25.,25.]]]).unwrap();
+        let before=layout.manual_page_cut_paths().unwrap();
+        layout.unlink_image_cut_paths(0).unwrap();
+        let after=layout.manual_page_cut_paths().unwrap();
+        assert_eq!(before,after);
+        assert!(layout.image_cut_paths_for(0).unwrap().is_empty());
+        assert!(!layout.image_cut_paths_for(1).unwrap().is_empty());
+        // New repeated placements inherit a remaining linked template, not a tombstone.
+        layout.count=3;
+        assert!(!layout.image_cut_paths_for(2).unwrap().is_empty());
+        let json=serde_json::to_string(&layout).unwrap();
+        let restored:Layout=serde_json::from_str(&json).unwrap();
+        assert!(restored.image_cut_paths_for(0).unwrap().is_empty());
     }
 }

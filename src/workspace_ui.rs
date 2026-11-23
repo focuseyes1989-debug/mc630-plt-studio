@@ -182,13 +182,12 @@ impl A4Studio {
             let mut percent = self.camera.target_zoom(self.zoom) * 100.;
             let slider = ui.scope(|ui| {
                 ui.spacing_mut().interact_size.y = 20.;
-                ui.add(
+                ui.add(crate::ui_theme::small_slider(
                     egui::Slider::new(&mut percent, 50. ..=1600.)
                         .logarithmic(true)
                         .suffix("%")
                         .fixed_decimals(0)
-                        .show_value(false),
-                )
+                        .show_value(false)))
             }).inner;
             if slider.changed() {
                 self.camera.zoom_to(ui.ctx(), percent / 100.);
