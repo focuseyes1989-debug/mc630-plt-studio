@@ -1,5 +1,8 @@
 use std::fmt::Write;
 pub mod sheet;
+pub mod svg_artwork;
+pub mod svg_outline;
+pub mod vector_trace;
 pub type Point = [f64; 2];
 #[derive(Clone, Debug)]
 pub struct Drawing {

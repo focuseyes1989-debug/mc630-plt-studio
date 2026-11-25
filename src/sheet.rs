@@ -1,5 +1,8 @@
 //! A4 artwork and cut paths share top-left millimetre coordinates.
 use crate::Point;
+
+/// Maximum user-selectable smoothing radius in physical millimetres.
+pub const MAX_SMOOTHING_MM: f64 = 10.;
 use base64::Engine;
 use image::RgbaImage;
 use std::{collections::HashMap, fmt::Write};
@@ -8,6 +11,7 @@ use std::{collections::HashMap, fmt::Write};
 pub struct OutlineCache {
     artwork: Option<u64>,
     entries: HashMap<[u64; 19], Result<Vec<Vec<Point>>, String>>,
+    svg_entries: HashMap<[u64;11],Result<Vec<Vec<Point>>,String>>,
 }
 impl OutlineCache {
     fn prepare(&mut self, art: &Artwork) {
@@ -811,7 +815,7 @@ fn straighten_polygon(path:&[Point],pixel_size:f64)->Vec<Point> {
     let mut simple=vec![ring[0]];
     simplify(&path[..=split],tolerance,&mut simple);
     simplify(&path[split..],tolerance,&mut simple);
-    if !(4..=13).contains(&simple.len()) {return path.to_vec();}
+    if !(4..=65).contains(&simple.len()) {return path.to_vec();}
     let n=simple.len()-1;
     for i in 0..n {
         let a=simple[(i+n-1)%n];let b=simple[i];let c=simple[(i+1)%n];
@@ -820,7 +824,58 @@ fn straighten_polygon(path:&[Point],pixel_size:f64)->Vec<Point> {
         let turn=(u[0]*v[1]-u[1]*v[0]).atan2(u[0]*v[0]+u[1]*v[1]).abs();
         if turn<25_f64.to_radians() {return path.to_vec();}
     }
-    simple
+    refine_polygon_lines(path,&simple,tolerance)
+}
+
+// Fit the interior of each straight edge, then intersect adjacent fitted lines.
+// This avoids choosing noisy raster endpoints as the actual logo corners.
+fn refine_polygon_lines(original:&[Point],polygon:&[Point],tolerance:f64)->Vec<Point> {
+    let n=polygon.len()-1;
+    if original.len().saturating_mul(n)>200_000 {return polygon.to_vec();}
+    let mut lines=Vec::with_capacity(n);
+    for edge in polygon.windows(2) {
+        let a=edge[0];let b=edge[1];let dx=b[0]-a[0];let dy=b[1]-a[1];let length=dx.hypot(dy);
+        let mut samples=Vec::new();
+        for segment in original.windows(2) {
+            let distance=(segment[1][0]-segment[0][0]).hypot(segment[1][1]-segment[0][1]);
+            let count=((distance/tolerance.max(0.005)).ceil() as usize).clamp(1,32);
+            for i in 0..count {
+                let t=(i as f64+0.5)/count as f64;
+                let p=[segment[0][0]+(segment[1][0]-segment[0][0])*t,segment[0][1]+(segment[1][1]-segment[0][1])*t];
+                let along=((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(length*length);
+                let across=((p[0]-a[0])*dy-(p[1]-a[1])*dx).abs()/length;
+                if (0.1..=0.9).contains(&along) && across<=tolerance*1.5 {samples.push((p,distance/count as f64));}
+            }
+        }
+        let weight=samples.iter().map(|(_,w)|w).sum::<f64>();
+        if samples.len()<3 || weight<=1e-9 {lines.push((a,[dx/length,dy/length]));continue;}
+        let center=[samples.iter().map(|(p,w)|p[0]*w).sum::<f64>()/weight,samples.iter().map(|(p,w)|p[1]*w).sum::<f64>()/weight];
+        let (mut xx,mut xy,mut yy)=(0.,0.,0.);
+        for (p,w) in samples {let x=p[0]-center[0];let y=p[1]-center[1];xx+=w*x*x;xy+=w*x*y;yy+=w*y*y;}
+        let angle=0.5*(2.*xy).atan2(xx-yy);
+        let direction=[angle.cos(),angle.sin()];
+        // Require the fitted axis to agree with the detected edge.
+        if (direction[0]*dx+direction[1]*dy).abs()/length<0.999 {lines.push((a,[dx/length,dy/length]));}
+        else {lines.push((center,direction));}
+    }
+    let mut refined=Vec::with_capacity(n+1);
+    for i in 0..n {
+        let (a,u)=lines[(i+n-1)%n];let (b,v)=lines[i];
+        let cross=u[0]*v[1]-u[1]*v[0];
+        if cross.abs()<1e-8 {return polygon.to_vec();}
+        let t=((b[0]-a[0])*v[1]-(b[1]-a[1])*v[0])/cross;
+        let mut p=[a[0]+t*u[0],a[1]+t*u[1]];
+        for axis in 0..2 {if (p[axis]-polygon[i][axis]).abs()<1e-9 {p[axis]=polygon[i][axis];}}
+        if !p.iter().all(|v|v.is_finite()) || (p[0]-polygon[i][0]).hypot(p[1]-polygon[i][1])>tolerance*2. {return polygon.to_vec();}
+        refined.push(p);
+    }
+    refined.push(refined[0]);
+    let distance=|point:Point|refined.windows(2).map(|edge| {
+        let a=edge[0];let dx=edge[1][0]-a[0];let dy=edge[1][1]-a[1];let denominator=dx*dx+dy*dy;
+        let t=if denominator>0. {(((point[0]-a[0])*dx+(point[1]-a[1])*dy)/denominator).clamp(0.,1.)}else{0.};
+        (point[0]-a[0]-t*dx).hypot(point[1]-a[1]-t*dy)
+    }).fold(f64::INFINITY,f64::min);
+    if original.iter().any(|p|distance(*p)>tolerance*2.) {polygon.to_vec()}else{refined}
 }
 
 // Detect turns that stay sharp at two distances, then smooth only between them.
@@ -898,7 +953,16 @@ fn smooth_mixed_contour(path: &[Point], amount: f64) -> Vec<Point> {
             end += ring.len();
         }
         let span: Vec<_> = (start..=end).map(|j| ring[j % ring.len()]).collect();
-        out.extend(smooth_path(&span, amount, false).into_iter().skip(1));
+        let a=span[0];let b=*span.last().unwrap();
+        let dx=b[0]-a[0];let dy=b[1]-a[1];let length=dx.hypot(dy);
+        // Pixel stair steps along a long edge should become one straight cut,
+        // rather than being converted into a shallow bowed curve.
+        let tolerance=(amount*0.08).min(0.08).min(length*0.005);
+        let straight=length>1e-8 && span.iter().all(|p| {
+            let t=(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(length*length)).clamp(0.,1.);
+            (p[0]-a[0]-t*dx).hypot(p[1]-a[1]-t*dy)<=tolerance
+        });
+        if straight {out.push(b);}else{out.extend(smooth_path(&span, amount, false).into_iter().skip(1));}
     }
     out
 }
@@ -980,7 +1044,7 @@ impl Orientation {
         }
     }
 
-    fn source_size(self, width: f64, height: f64) -> (f64, f64) {
+    pub fn source_size(self, width: f64, height: f64) -> (f64, f64) {
         if let Some(rotation) = self.free_rotation {
             let (w, h) = Self::bounding_size(rotation.degrees, rotation.source_aspect, 1.);
             let scale = ((width / w) * (height / h)).sqrt();
@@ -1210,6 +1274,8 @@ pub struct Layout {
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub hidden_images: std::collections::BTreeSet<usize>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub image_opacity: std::collections::BTreeMap<usize,u8>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub image_groups: std::collections::BTreeMap<usize, usize>,
     /// Vertical (X) and horizontal (Y) guides in page millimetres.
     #[serde(default)]
@@ -1219,6 +1285,8 @@ pub struct Layout {
     pub manual_cut_paths: Vec<Vec<Point>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub design_shapes: Vec<DesignShape>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub svg_sources: std::collections::BTreeMap<usize,crate::svg_artwork::SvgArtwork>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub image_cut_paths: std::collections::BTreeMap<usize, Vec<Vec<Point>>>,
     #[serde(default)]
@@ -1253,11 +1321,11 @@ impl Default for Layout {
             cut_inner_holes: false,
             custom: Default::default(),
             image_tiles: vec![],
-            hidden_images: Default::default(),
+            hidden_images: Default::default(),image_opacity:Default::default(),
             image_groups: Default::default(),
             guides: Default::default(),
             manual_cut_paths: vec![],
-            design_shapes: vec![],
+            design_shapes: vec![],svg_sources:Default::default(),
             image_cut_paths: Default::default(),
             use_manual_cut_paths: false,
             margin: 15.,
@@ -1294,6 +1362,7 @@ impl Layout {
     }
 
     pub fn validate_manual_cut_paths(&self) -> Result<(), String> {
+        if self.svg_sources.len()>1000 || self.svg_sources.values().map(|s|s.source.len()).sum::<usize>()>30_000_000 || self.svg_sources.iter().any(|(i,s)|*i>=self.count || s.raster_rect[2]==0 || s.raster_rect[3]==0 || s.viewport.iter().any(|v|!v.is_finite()) || s.viewport[2]<=0. || s.viewport[3]<=0.) {return Err("Invalid SVG artwork metadata.".into());}
         if self.design_shapes.len()>100 || self.design_shapes.iter().map(|s|s.path.len()).sum::<usize>()>100_000
             || self.design_shapes.iter().any(|s| !(2..=4000).contains(&s.path.len()) || !s.stroke_width.is_finite()
                 || !(0. ..=20.).contains(&s.stroke_width) || (!s.print && !s.cut)
@@ -1394,8 +1463,8 @@ impl Layout {
                 }
             }
         }
-        if !self.smoothing.is_finite() || !(0. ..=4.).contains(&self.smoothing) {
-            return Err("Outline smoothing must be between 0 and 4 mm.".into());
+        if !self.smoothing.is_finite() || !(0. ..=MAX_SMOOTHING_MM).contains(&self.smoothing) {
+            return Err("Outline smoothing must be between 0 and 10 mm.".into());
         }
         if self.smoothing > 0. {
             for path in &mut paths {
@@ -1435,7 +1504,8 @@ impl Layout {
         self.validate_manual_cut_paths()?;
         if region.iter().any(|v|!v.is_finite()) || region[2]<=0. || region[3]<=0. {return Err("Invalid design preview region.".into());}
         if width==0 || height==0 || width as u64*height as u64>80_000_000 {return Err("Design preview is too large.".into());}
-        let svg=format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="{} {} {} {}" preserveAspectRatio="none">{}</svg>"#,width,height,region[0],region[1],region[2],region[3],self.design_svg_paths());
+        let mut markup=self.svg_artwork_markup()?;markup.push_str(&self.design_svg_paths());
+        let svg=format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="{} {} {} {}" preserveAspectRatio="none">{}</svg>"#,width,height,region[0],region[1],region[2],region[3],markup);
         let tree=usvg::Tree::from_str(&svg,&usvg::Options::default()).map_err(|e|e.to_string())?;
         let mut pixmap=resvg::tiny_skia::Pixmap::new(width,height).ok_or("Cannot allocate design preview")?;
         resvg::render(&tree,resvg::tiny_skia::Transform::identity(),&mut pixmap.as_mut());
@@ -1609,8 +1679,8 @@ impl Layout {
         } else {
             vec![]
         };
-        if !self.smoothing.is_finite() || !(0.0..=4.0).contains(&self.smoothing) {
-            return Err("Smoothing must be between 0 and 4 mm.".into());
+        if !self.smoothing.is_finite() || !(0.0..=MAX_SMOOTHING_MM).contains(&self.smoothing) {
+            return Err("Smoothing must be between 0 and 10 mm.".into());
         }
         let preserve_corners = self.preserve_corners;
         if preserve_corners {
@@ -1688,9 +1758,13 @@ impl Layout {
             );
         }
         // Smooth the final offset geometry: buffering can introduce new corners.
-        if self.smoothing > 0. && !preserve_corners {
+        if self.smoothing > 0. {
             for path in &mut outlines {
-                *path = smooth_contour(path, self.smoothing);
+                *path = if preserve_corners {
+                    // Buffering introduces fresh tiny joins even after input cleanup.
+                    // A bounded finishing pass removes them without rounding logo tips.
+                    smooth_mixed_contour(path,self.smoothing.min(0.25))
+                }else{smooth_contour(path, self.smoothing)};
             }
         }
         self.validate_outline_spacing(&outlines)?;
@@ -1745,6 +1819,11 @@ impl Layout {
             if self.hidden_images.contains(&i) {
                 continue;
             }
+            if let Some(asset)=self.svg_source_for(i) {
+                let tile=self.image_tiles.get(i).copied().unwrap_or(asset.raster_rect);
+                let mut raster=asset.raster(tile,mm(item.width).max(1),mm(item.height).max(1),item.orientation)?;self.apply_opacity(i,&mut raster);
+                image::imageops::overlay(&mut page,&raster,mm(item.x) as i64,mm(item.y) as i64);continue;
+            }
             let key = (
                 mm(item.width).max(1),
                 mm(item.height).max(1),
@@ -1754,10 +1833,14 @@ impl Layout {
             let raster = cache
                 .entry(key)
                 .or_insert_with(|| item.orientation.raster(&a.at(i).pixels, key.0, key.1));
-            image::imageops::overlay(&mut page, raster, mm(item.x) as i64, mm(item.y) as i64);
+            if self.opacity_for(i)==255 {image::imageops::overlay(&mut page,raster,mm(item.x) as i64,mm(item.y) as i64);}else {
+                let mut faded=raster.clone();self.apply_opacity(i,&mut faded);
+                image::imageops::overlay(&mut page,&faded,mm(item.x) as i64,mm(item.y) as i64);
+            }
         }
         if self.has_print_designs() {
-            let overlay=self.render_designs(page.width(),page.height())?;
+            let mut designs=self.clone();designs.svg_sources.clear();
+            let overlay=designs.render_designs(page.width(),page.height())?;
             image::imageops::overlay(&mut page,&overlay,0,0);
         }
         let mut rect = |x: f64, y: f64, w: f64, h: f64| {
@@ -1983,9 +2066,9 @@ impl Layout {
         let old_count=self.count;
         next.count=count;
         next.custom.retain(|i,_|*i<count);
-        next.hidden_images.retain(|i|*i<count);
+        next.hidden_images.retain(|i|*i<count);next.image_opacity.retain(|i,_|*i<count);
         next.image_groups.retain(|i,_|*i<count);
-        next.image_cut_paths.retain(|i,_|*i<count);
+        next.image_cut_paths.retain(|i,_|*i<count);next.svg_sources.retain(|i,_|*i<count);
         if let Some(tile)=self.image_tiles.first() {
             let items=next.items()?;
             next.custom=items.into_iter().enumerate().collect();
@@ -2065,6 +2148,38 @@ impl Layout {
             // Position is deliberately excluded; validation-affecting settings are retained.
             let [left, right, top, bottom] = self.margins();
             let (width, height) = item.orientation.source_size(item.width, item.height);
+            // SVG base geometry is independent of raster DPI; optional smoothing
+            // cleans the final vector offset without retracing pixels.
+            let raster=a.at(i);
+            let frame=raster.holes.is_empty() && raster.outlines.len()==1 && raster.outlines[0].len()==5 && [[0.,0.],[1.,0.],[1.,1.],[0.,1.]].iter().all(|corner|raster.outlines[0].contains(corner));
+            if let Some(asset)=self.svg_source_for(i).filter(|_|raster.ellipse_bounds.is_none() && !frame) {
+                use std::hash::{Hash,Hasher};
+                let tile=self.image_tiles.get(i).copied().unwrap_or(asset.raster_rect);
+                let mut hash=std::collections::hash_map::DefaultHasher::new();
+                asset.source.hash(&mut hash);asset.viewport.map(f64::to_bits).hash(&mut hash);asset.raster_rect.hash(&mut hash);
+                if !self.smoothing.is_finite() || !(0. ..=MAX_SMOOTHING_MM).contains(&self.smoothing) {return Err("Smoothing must be between 0 and 10 mm.".into());}
+                let key=[hash.finish(),width.to_bits(),height.to_bits(),self.contour_offset.to_bits(),cut_holes as u64,tile[0] as u64,tile[1] as u64,tile[2] as u64,tile[3] as u64,self.smoothing.to_bits(),self.preserve_corners as u64];
+                if !cache.svg_entries.contains_key(&key) {
+                    if cache.svg_entries.len()>=64 {cache.svg_entries.clear();}
+                    let result=asset.vector_cut_paths(tile,width,height,self.contour_offset,cut_holes).and_then(|mut paths| {
+                        if self.smoothing>0. {
+                            for path in &mut paths {*path=if self.preserve_corners {smooth_mixed_contour(path,self.smoothing)}else{smooth_contour(path,self.smoothing)};}
+                        }
+                        let mut local=self.clone();local.width=width;local.height=height;
+                        if !self.custom.is_empty() {local.count=1;local.custom.clear();}
+                        local.validate_outline_spacing(&paths)?;Ok(paths)
+                    });
+                    cache.svg_entries.insert(key,result);
+                }
+                let [origin,right,_,bottom]=item.orientation.unit_corners();
+                let target=group.map_or(&mut paths,|id|groups.entry(*id).or_default());
+                for outline in cache.svg_entries[&key].as_ref().map_err(Clone::clone)? {
+                    target.push(outline.iter().map(|p| {let u=p[0]/width;let v=p[1]/height;[
+                        item.x+(origin[0]+(right[0]-origin[0])*u+(bottom[0]-origin[0])*v)*item.width,
+                        item.y+(origin[1]+(right[1]-origin[1])*u+(bottom[1]-origin[1])*v)*item.height]}).collect());
+                }
+                continue;
+            }
             let key = [
                 width.to_bits(),
                 height.to_bits(),
@@ -2208,6 +2323,9 @@ impl Layout {
             if self.hidden_images.contains(&i) {
                 continue;
             }
+            if let Some(asset)=self.svg_source_for(i) {
+                write!(s,"<g opacity=\"{}\">",self.opacity_for(i) as f64/255.).unwrap();s.push_str(&asset.markup(p,self.image_tiles.get(i).copied().unwrap_or(asset.raster_rect),i)?);s.push_str("</g>");continue;
+            }
             let image = a.at(i);
             let key = std::ptr::from_ref(image);
             let data = match encoded_images.entry(key) {
@@ -2221,6 +2339,7 @@ impl Layout {
                     entry.insert(base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
                 }
             };
+            write!(s,"<g opacity=\"{}\">",self.opacity_for(i) as f64/255.).unwrap();
             if p.orientation == Orientation::default() {
                 write!(s,"<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"/>",p.x,p.y,p.width,p.height,data).unwrap();
             } else {
@@ -2231,6 +2350,7 @@ impl Layout {
                 write!(s, r#"<image width="{width}" height="{height}" preserveAspectRatio="none" transform="matrix({} {} {} {} {} {})" href="data:image/png;base64,{data}"/>"#,
                     xx - x, xy - y, yx - x, yy - y, p.x + x, p.y + y).unwrap();
             }
+            s.push_str("</g>");
         }
         s.push_str(&self.design_svg_paths());
         for (x, y) in self.manual_marks() {
@@ -2350,6 +2470,25 @@ mod tests {
             layout.page_cut_paths(&art).unwrap(),
             layout.manual_cut_paths
         );
+    }
+    #[test]
+    fn image_opacity_roundtrips_and_changes_print_but_not_cut_geometry() {
+        let art=sample();let mut layout=Layout{count:1,..Default::default()};
+        let original=layout.page_cut_paths(&art).unwrap();
+        assert_eq!(layout.opacity_for(0),255);
+        layout.image_opacity.insert(0,128);
+        let loaded:Layout=serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        assert_eq!(loaded.opacity_for(0),128);
+        assert_eq!(loaded.page_cut_paths(&art).unwrap(),original);
+        assert!(loaded.print_html(&art).unwrap().contains("<g opacity=\"0.5019607843137255\">"));
+        let mut raster=RgbaImage::from_pixel(1,1,image::Rgba([20,40,60,128]));
+        loaded.apply_opacity(0,&mut raster);assert_eq!(raster.get_pixel(0,0).0,[20,40,60,64]);
+        layout.image_opacity.insert(0,0);
+        let page=layout.print_raster(&art,None).unwrap();
+        let item=layout.items().unwrap()[0];
+        let x=((item.x+item.width/2.)/25.4*300.).round() as u32;
+        let y=((item.y+item.height/2.)/25.4*300.).round() as u32;
+        assert_eq!(page.get_pixel(x,y).0,[255,255,255,255]);
     }
     #[test]
     fn hidden_layers_keep_placement_but_are_excluded_from_print_cut_and_ccd() {
@@ -3838,5 +3977,117 @@ mod unlink_tests {
         let json=serde_json::to_string(&layout).unwrap();
         let restored:Layout=serde_json::from_str(&json).unwrap();
         assert!(restored.image_cut_paths_for(0).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod smoothing_range_tests {
+    use super::*;
+    #[test]
+    fn stronger_smoothing_is_supported_for_auto_and_manual_paths_and_survives_save() {
+        let art=Artwork {pixels:RgbaImage::new(500,500),outlines:vec![vec![[0.2,0.2],[0.8,0.2],[0.8,0.8],[0.2,0.8],[0.2,0.2]]],holes:vec![],tiles:vec![],ellipse_bounds:None};
+        let layout=Layout {width:100.,height:100.,count:1,preserve_corners:false,smoothing:MAX_SMOOTHING_MM,..Default::default()};
+        let high=layout.outline_mm(&art).unwrap();
+        let normal=Layout {smoothing:4.,..layout.clone()}.outline_mm(&art).unwrap();
+        assert_ne!(high,normal);
+        assert_eq!(high[0].first(),high[0].last());
+        assert!(high.iter().flatten().flatten().all(|v|v.is_finite()));
+        let manual=Layout {manual_cut_paths:vec![vec![[20.,20.],[80.,20.],[80.,80.],[20.,80.],[20.,20.]]],use_manual_cut_paths:true,..layout.clone()};
+        assert!(manual.manual_page_cut_paths().is_ok());
+        let json=serde_json::to_string(&manual).unwrap();
+        let restored:Layout=serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.smoothing,10.);
+        assert!(restored.manual_page_cut_paths().is_ok());
+        assert!(Layout {smoothing:10.1,..layout}.outline_mm(&art).is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_smoothing_profile {
+    use super::*;
+    #[test]
+    #[ignore = "manual smoothing diagnostic using MC630_PROFILE_RECOVERY"]
+    fn inspect_open_document_smoothing() {
+        let path=std::env::var("MC630_PROFILE_RECOVERY").unwrap();
+        let record:serde_json::Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let settings=&record["project"]["settings"];
+        let mut layout:Layout=serde_json::from_value(settings["layout"].clone()).unwrap();
+        let source=base64::engine::general_purpose::STANDARD.decode(record["project"]["image_base64"].as_str().unwrap()).unwrap();
+        let art=layout.trace_images(&source,settings["remove_white"].as_bool().unwrap(),settings["threshold"].as_u64().unwrap() as u8,serde_json::from_value(settings["cut_shape"].clone()).unwrap(),settings["background_tolerance"].as_u64().unwrap() as u8,settings["print_without_background"].as_bool().unwrap()).unwrap();
+        let item=layout.editor_items().unwrap()[0];layout.width=item.width;layout.height=item.height;
+        let before=layout.outline_mm(&art).unwrap();
+        let after:Vec<_>=before.iter().map(|p|smooth_mixed_contour(p,layout.smoothing)).collect();
+        let mut svg=format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="white"/>"#,layout.width*2.+10.,layout.height);
+        for (paths,x) in [(&before,0.),(&after,layout.width+10.)] {
+            svg.push_str(&format!(r#"<g transform="translate({} 0)" fill="none" stroke="red" stroke-width="0.08">"#,x));
+            for path in paths {svg.push_str(&format!(r#"<polyline points="{}"/>"#,path.iter().map(|p|format!("{},{}",p[0],p[1])).collect::<Vec<_>>().join(" ")));}
+            svg.push_str("</g>");
+        }
+        svg.push_str("</svg>");
+        let tree=usvg::Tree::from_str(&svg,&usvg::Options::default()).unwrap();
+        let mut pixels=resvg::tiny_skia::Pixmap::new(1600,900).unwrap();resvg::render(&tree,resvg::tiny_skia::Transform::identity(),&mut pixels.as_mut());pixels.save_png("target/smoothing-comparison.png").unwrap();
+        println!("paths={} before_points={} after_points={}",before.len(),before.iter().map(Vec::len).sum::<usize>(),after.iter().map(Vec::len).sum::<usize>());
+    }
+}
+
+#[cfg(test)]
+mod mixed_edge_finish_tests {
+    use super::*;
+    #[test]
+    fn noisy_straight_edges_are_not_smoothed_into_bowed_curves() {
+        let mut path:Vec<_>=(0..=400).map(|i|[20.+i as f64*0.1,20.+0.02*(i as f64*std::f64::consts::TAU/40.).sin()]).collect();
+        path.extend([[60.,60.],[20.,60.],[20.,20.]]);
+        let smoothed=smooth_mixed_contour(&path,1.);
+        assert_eq!(smoothed.len(),5);
+        assert_eq!(smoothed.first(),smoothed.last());
+        for point in smoothed {assert!((point[0]-20.).abs()<1e-6 || (point[0]-60.).abs()<1e-6);}
+    }
+}
+
+#[cfg(test)]
+mod line_fit_precision_tests {
+    use super::*;
+    #[test]
+    fn fitted_rotated_edges_recover_corners_without_axis_snapping() {
+        let angle=0.31_f64;let rotate=|p:Point|[100.+p[0]*angle.cos()-p[1]*angle.sin(),100.+p[0]*angle.sin()+p[1]*angle.cos()];
+        let exact=[[0.,0.],[60.,0.],[60.,40.],[0.,40.]].map(rotate);
+        let mut original=Vec::new();
+        for edge in 0..4 {
+            let a=exact[edge];let b=exact[(edge+1)%4];let dx=b[0]-a[0];let dy=b[1]-a[1];let length=dx.hypot(dy);
+            for i in 0..100 {
+                let t=i as f64/100.;let noise=0.02*(i as f64*std::f64::consts::TAU/10.).sin();
+                original.push([a[0]+t*dx-noise*dy/length,a[1]+t*dy+noise*dx/length]);
+            }
+        }
+        original.push(original[0]);
+        let mut coarse:Vec<_>=exact.iter().map(|p|[p[0]+0.08,p[1]-0.06]).collect();coarse.push(coarse[0]);
+        let refined=refine_polygon_lines(&original,&coarse,0.15);
+        assert_eq!(refined.len(),5);assert_eq!(refined.first(),refined.last());
+        for (got,expected) in refined.iter().zip(exact.iter()) {assert!((got[0]-expected[0]).hypot(got[1]-expected[1])<0.01);}
+        let edge=[refined[1][0]-refined[0][0],refined[1][1]-refined[0][1]];
+        assert!((edge[1].atan2(edge[0])-angle).abs()<0.001);
+    }
+}
+
+impl Layout {
+    pub fn svg_source_for(&self,index:usize)->Option<&crate::svg_artwork::SvgArtwork> {
+        self.svg_sources.get(&index).or_else(||self.svg_sources.iter().find_map(|(owner,asset)| {
+            let same=if self.image_tiles.is_empty() {true}else{self.image_tiles.get(index).zip(self.image_tiles.get(*owner)).is_some_and(|(a,b)|a==b)};
+            same.then_some(asset)
+        }))
+    }
+    pub fn opacity_for(&self,index:usize)->u8 { self.image_opacity.get(&index).copied().unwrap_or(255) }
+    pub fn apply_opacity(&self,index:usize,raster:&mut RgbaImage) {
+        let opacity=self.opacity_for(index) as u16;
+        if opacity<255 {for pixel in raster.pixels_mut() {pixel[3]=((pixel[3] as u16*opacity+127)/255) as u8;}}
+    }
+    pub fn svg_artwork_markup(&self)->Result<String,String> {
+        if self.svg_sources.is_empty() {return Ok(String::new());}
+        let mut markup=String::new();
+        for (index,item) in self.editor_items()?.into_iter().enumerate() {
+            if self.hidden_images.contains(&index) {continue;}
+            if let Some(asset)=self.svg_source_for(index) {markup.push_str(&format!("<g opacity=\"{}\">",self.opacity_for(index) as f64/255.));markup.push_str(&asset.markup(item,self.image_tiles.get(index).copied().unwrap_or(asset.raster_rect),index)?);markup.push_str("</g>");}
+        }
+        Ok(markup)
     }
 }

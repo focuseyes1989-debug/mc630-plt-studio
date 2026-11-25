@@ -14,6 +14,7 @@ const MAX_BYTES: usize = 30_000_000;
 pub struct ImportedImage {
     pub bytes: Vec<u8>,
     pub name: String,
+    pub svg: Option<mc630_plt_studio::svg_artwork::SvgArtwork>,
 }
 
 pub fn read_file(path: &Path) -> Result<ImportedImage, String> {
@@ -34,6 +35,7 @@ pub fn prepare(mut bytes: Vec<u8>, name: String) -> Result<ImportedImage, String
     if bytes.len() > MAX_BYTES {
         return Err("Image exceeds 30 MB.".into());
     }
+    let mut svg=None;
     let format = image::guess_format(&bytes);
     if format.is_err() {
         let extension = Path::new(&name).extension().and_then(|ext| ext.to_str());
@@ -60,7 +62,10 @@ pub fn prepare(mut bytes: Vec<u8>, name: String) -> Result<ImportedImage, String
                     .starts_with('<')
             })
         {
-            bytes = render_svg(&bytes)?;
+            let original=bytes;
+            bytes = render_svg(&original)?;
+            let size=image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format().map_err(|e|e.to_string())?.into_dimensions().map_err(|e|e.to_string())?;
+            svg=Some(mc630_plt_studio::svg_artwork::SvgArtwork::from_bytes(&original,[size.0,size.1])?);
         } else {
             return Err("Unsupported image format. Use PNG, JPEG, WebP, GIF, BMP, TIFF, ICO, TGA, PNM, QOI or SVG.".into());
         }
@@ -72,7 +77,7 @@ pub fn prepare(mut bytes: Vec<u8>, name: String) -> Result<ImportedImage, String
             "This image format is unavailable. Save it as PNG, JPEG or WebP and try again.".into(),
         );
     }
-    Ok(ImportedImage { bytes, name })
+    Ok(ImportedImage { bytes, name, svg })
 }
 
 fn render_svg(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -231,5 +236,35 @@ mod tests {
         assert_eq!(pixels.get_pixel(10, 10).0, [255, 0, 0, 128]);
         assert_eq!(pixels.get_pixel(40, 40)[3], 0);
         assert!(prepare(b"<html><body>Page</body></html>".to_vec(), "page".into()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod svg_vector_profile {
+    #[test]
+    #[ignore = "manual SVG fidelity check using MC630_SVG_FILE"]
+    fn render_original_svg_at_zoom_resolution() {
+        let path=std::env::var("MC630_SVG_FILE").unwrap();
+        let imported=super::read_file(std::path::Path::new(&path)).unwrap();
+        let asset=imported.svg.unwrap();
+        let size=mc630_plt_studio::svg_artwork::tree(&asset.source).unwrap().size();
+        let height=(800.*size.height()/size.width()).round() as u32;
+        let on_white=|pixels:image::RgbaImage| {
+            let mut output=image::RgbaImage::from_pixel(pixels.width(),pixels.height(),image::Rgba([255,255,255,255]));
+            image::imageops::overlay(&mut output,&pixels,0,0);output
+        };
+        on_white(asset.raster(asset.raster_rect,800,height,Default::default()).unwrap()).save("target/svg-vector-full.png").unwrap();
+        let mut zoom=asset.clone();zoom.viewport=[0.2,0.20,0.25,0.16];
+        let height=(1600.*size.height() as f64*zoom.viewport[3]/(size.width() as f64*zoom.viewport[2])).round() as u32;
+        on_white(zoom.raster(zoom.raster_rect,1600,height,Default::default()).unwrap()).save("target/svg-vector-zoom.png").unwrap();
+        let width=200.;let height=width*size.height() as f64/size.width() as f64;
+        let cuts=asset.vector_cut_paths(asset.raster_rect,width,height,0.5,false).unwrap();
+        let placement=mc630_plt_studio::sheet::Placement {x:0.,y:0.,width,height,orientation:Default::default()};
+        let mut markup=format!(r#"<rect width="{}" height="{}" fill="white"/>{}"#,width,height,asset.markup(placement,asset.raster_rect,0).unwrap());
+        for cut in &cuts {markup.push_str(&format!(r#"<polyline fill="none" stroke="red" stroke-width="0.05" points="{}"/>"#,cut.iter().map(|p|format!("{},{}",p[0],p[1])).collect::<Vec<_>>().join(" ")));}
+        mc630_plt_studio::svg_artwork::render(&markup,1600,1448,[width*0.2,height*0.2,width*0.25,height*0.16]).unwrap().save("target/svg-native-cutline.png").unwrap();
+        println!("Native vector cutline: {} paths, {} points",cuts.len(),cuts.iter().map(Vec::len).sum::<usize>());
+        let png=mc630_plt_studio::sheet::decode_image(&imported.bytes).unwrap();
+        println!("SVG retained: {} bytes; original raster {}x{}; zoom re-rendered at 1600 px width",asset.source.len(),png.width(),png.height());
     }
 }

@@ -29,6 +29,7 @@ mod ui_theme;
 mod color_dialog;
 mod design_preview;
 mod design_transform;
+mod vector_trace_ui;
 mod shape_ops;
 mod update_install;
 mod updater;

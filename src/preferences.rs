@@ -125,7 +125,7 @@ impl Preferences {
         if !self.zoom.is_finite() || !(0.5..=16.).contains(&self.zoom) {
             return Err("Invalid zoom setting.".into());
         }
-        if !(0.0..=4.).contains(&self.layout.smoothing)
+        if !(0.0..=mc630_plt_studio::sheet::MAX_SMOOTHING_MM).contains(&self.layout.smoothing)
             || !(-5.0..=5.).contains(&self.layout.contour_offset)
             || !(1.0..=10.).contains(&self.profile.diameter)
             || !(5.0..=30.).contains(&self.profile.inset)

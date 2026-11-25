@@ -19,6 +19,10 @@ impl A4Studio {
         if !self.autosave.offered.is_empty() || self.close_approved || self.tab_closed {
             return;
         }
+        // A shape draft is not a document edit until release. Avoid serializing
+        // every layer and SVG source for a snapshot while the pointer is dragging.
+        if (self.cut_draft.as_ref().is_some_and(|draft|draft.drag_start.is_some()) || self.shape_group_drag.is_some())
+            && ctx.input(|i|i.pointer.primary_down()) {return;}
         let signature = self.document_signature();
         if self.autosave.observed != Some(signature) {
             self.autosave.observed = Some(signature);

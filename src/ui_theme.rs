@@ -187,6 +187,7 @@ pub enum Icon {
     AddImage,
     Export,
     Pen,
+    Line,
     Ellipse,
     Rectangle,
     Select,
@@ -456,6 +457,9 @@ pub(crate) fn paint_icon(ui: &egui::Ui, r: egui::Rect, kind: Icon) {
             ));
             line((7., 25.), (15., 17.));
             painter.circle_filled(p(15., 17.), 1.5, ink.color);
+        }
+        Icon::Line => {
+            line((7.,25.), (25.,7.));
         }
         Icon::Ellipse => {
             painter.circle_stroke(p(16., 16.), 9., ink);

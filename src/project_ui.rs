@@ -171,7 +171,7 @@ impl A4Studio {
     }
     fn install_project_prepared(&mut self,project:crate::project::Project,source:Vec<u8>,ctx:&egui::Context,art:Option<Artwork>,preview:Option<egui::ColorImage>,prepared:bool) {
         self.back_paths_cache=None;
-        self.selected_design=None;self.shape_selection.clear();self.design_drag=None;self.design_preview=Default::default();
+        self.selected_design=None;self.shape_selection.clear();self.design_drag=None;self.design_preview=Default::default();self.svg_previews.clear();
         self.back.install(project.back);
         self.show_back = false;
         self.print_back = false;

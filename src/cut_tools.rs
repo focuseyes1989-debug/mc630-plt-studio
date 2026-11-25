@@ -34,11 +34,41 @@ pub fn hit(path: &[Point], point: Point, tolerance: f64) -> bool {
     path.first() == path.last() && inside
 }
 
+pub fn intersects_box(path:&[Point],rect:[f64;4])->bool {
+    for pair in path.windows(2) {
+        let (mut lo,mut hi)=(0_f64,1_f64);
+        for axis in 0..2 {
+            let delta=pair[1][axis]-pair[0][axis];
+            if delta.abs()<1e-12 {
+                if pair[0][axis]<rect[axis] || pair[0][axis]>rect[axis+2] {hi=-1.;break;}
+            }else {
+                let a=(rect[axis]-pair[0][axis])/delta;let b=(rect[axis+2]-pair[0][axis])/delta;
+                lo=lo.max(a.min(b));hi=hi.min(a.max(b));
+            }
+        }
+        if lo<=hi {return true;}
+    }
+    path.len()>2 && path.first()==path.last() && hit(path,[(rect[0]+rect[2])/2.,(rect[1]+rect[3])/2.],0.)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Pen,
+    Line,
     Ellipse,
     Rectangle,
+}
+
+/// Keep a constrained straight line inside the page without changing its angle.
+pub fn clip_line_end(start:Point,end:Point,page:Point)->Point {
+    let delta=[end[0]-start[0],end[1]-start[1]];
+    let mut fraction=1_f64;
+    for axis in 0..2 {
+        if delta[axis]>0. {fraction=fraction.min((page[axis]-start[axis])/delta[axis]);}
+        else if delta[axis]<0. {fraction=fraction.min(-start[axis]/delta[axis]);}
+    }
+    let fraction=fraction.clamp(0.,1.);
+    [start[0]+delta[0]*fraction,start[1]+delta[1]*fraction]
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -157,6 +187,10 @@ pub fn shape_path(
     equal: bool,
     radius: f64,
 ) -> Vec<Point> {
+    if tool == Tool::Line {
+        if equal {end=constrain_pen(start,end);}
+        return if (end[0]-start[0]).hypot(end[1]-start[1])>=0.2 {vec![start,end]}else{vec![]};
+    }
     if equal {
         let dx = end[0] - start[0];
         let dy = end[1] - start[1];
@@ -171,7 +205,7 @@ pub fn shape_path(
     let arc_steps =
         |r: f64| ((std::f64::consts::FRAC_PI_2 * (r / 0.16).sqrt()).ceil() as usize).clamp(4, 128);
     let mut path = match tool {
-        Tool::Pen => return vec![],
+        Tool::Pen | Tool::Line => return vec![],
         Tool::Ellipse => {
             let steps = 4 * arc_steps(w.max(h) / 2.);
             (0..steps)
@@ -219,6 +253,25 @@ pub fn shape_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn marquee_intersects_actual_segments_and_closed_interiors() {
+        let line=vec![[0.,0.],[100.,100.]];
+        assert!(!intersects_box(&line,[0.,80.,10.,90.]));
+        assert!(intersects_box(&line,[45.,45.,55.,55.]));
+        let closed=vec![[0.,0.],[100.,0.],[100.,100.],[0.,100.],[0.,0.]];
+        assert!(intersects_box(&closed,[40.,40.,60.,60.]));
+        assert!(!intersects_box(&closed,[110.,110.,120.,120.]));
+    }
+    #[test]
+    fn line_tool_keeps_open_horizontal_vertical_and_constrained_segments() {
+        assert_eq!(shape_path(Tool::Line,[10.,20.],[50.,20.],false,0.),vec![[10.,20.],[50.,20.]]);
+        assert_eq!(shape_path(Tool::Line,[10.,20.],[10.,60.],false,0.),vec![[10.,20.],[10.,60.]]);
+        let diagonal=shape_path(Tool::Line,[10.,20.],[35.,43.],true,0.);
+        assert!(((diagonal[1][0]-10.)-(diagonal[1][1]-20.)).abs()<1e-8);
+        assert!(shape_path(Tool::Line,[10.,20.],[10.01,20.01],false,0.).is_empty());
+        let end=clip_line_end([200.,290.],[220.,310.],[210.,297.]);
+        assert_eq!(end,[207.,297.]);
+    }
     #[test]
     fn shapes_close_and_pen_drag_creates_a_curve() {
         let square = shape_path(Tool::Rectangle, [10., 10.], [30., 25.], true, 0.);

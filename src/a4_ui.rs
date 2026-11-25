@@ -186,6 +186,16 @@ struct GuideDrag {
     value: f64,
     grab_offset: f64,
 }
+struct ShapeGroupDrag {
+    designs:Vec<sheet::DesignShape>,
+    cuts:Vec<Vec<mc630_plt_studio::Point>>,
+    targets:Vec<crate::shape_ops::Target>,
+    lengths:Vec<usize>,
+    points:Vec<mc630_plt_studio::Point>,
+    start:egui::Pos2,
+    handle:Option<usize>,
+    toggle_click:Option<crate::shape_ops::Target>,
+}
 struct CutShapeDrag {
     before: Vec<Vec<mc630_plt_studio::Point>>,
     duplicate: bool,
@@ -235,6 +245,7 @@ struct WebImageImport {
 
 pub struct A4Studio {
     web_import: Option<WebImageImport>,
+    vector_trace:Option<crate::vector_trace_ui::Dialog>,
     io_job: Option<crate::project_io::Job>,
     io_after_save: Option<DocumentAction>,
     io_workspace_result: Option<Result<(),String>>,
@@ -307,8 +318,11 @@ pub struct A4Studio {
     design_stroke_width: f64,
     selected_design: Option<usize>,
     shape_selection: Vec<crate::shape_ops::Target>,
+    shape_group_drag:Option<ShapeGroupDrag>,
+    shape_angle:f64,
     design_drag: Option<(usize,Vec<sheet::DesignShape>,egui::Pos2,Option<usize>,bool)>,
     design_preview: crate::design_preview::Preview,
+    svg_previews: std::collections::BTreeMap<usize,crate::design_preview::Preview>,
     pick_cut_shapes: bool,
     selected_cut_shape: Option<usize>,
     cut_shape_drag: Option<CutShapeDrag>,
@@ -334,7 +348,7 @@ pub struct A4Studio {
     contour_color: egui::Color32,
     selected: Option<usize>,
     selection: std::collections::BTreeSet<usize>,
-    marquee: Option<(egui::Pos2, std::collections::BTreeSet<usize>)>,
+    marquee: Option<(egui::Pos2, std::collections::BTreeSet<usize>,Vec<crate::shape_ops::Target>)>,
     selection_anchor: Option<usize>,
     drag: Option<CanvasDrag>,
     undo: Vec<ObjectEdit>,
@@ -368,7 +382,7 @@ struct PageSizeEditor {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{web_import:None,io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),recent_gallery:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,show_navigator:true,navigator_view:None,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_manual_marks:false,overflow_warning_seen:false,overflow_warning_open:false,crop_edit:None,cut_draft:None,cut_corner_radius:0.,drawing_mode:0,design_fill:egui::Color32::from_rgb(0,103,192),design_fill_enabled:true,design_stroke:egui::Color32::BLACK,design_stroke_width:0.3,selected_design:None,shape_selection:vec![],design_drag:None,design_preview:Default::default(),pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,camera:Default::default(),rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_margins_linked:true,margins_linked:false,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),marquee:None,selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{vector_trace:None,web_import:None,io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),recent_gallery:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,show_navigator:true,navigator_view:None,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_manual_marks:false,overflow_warning_seen:false,overflow_warning_open:false,crop_edit:None,cut_draft:None,cut_corner_radius:0.,drawing_mode:0,design_fill:egui::Color32::from_rgb(0,103,192),design_fill_enabled:true,design_stroke:egui::Color32::BLACK,design_stroke_width:0.3,selected_design:None,shape_selection:vec![],shape_group_drag:None,shape_angle:0.,design_drag:None,design_preview:Default::default(),svg_previews:Default::default(),pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,camera:Default::default(),rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_margins_linked:true,margins_linked:false,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),marquee:None,selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -767,9 +781,9 @@ impl A4Studio {
         self.name = "No image selected".into();
         self.layout.custom.clear();
         self.layout.image_tiles.clear();
-        self.layout.hidden_images.clear();
+        self.layout.hidden_images.clear();self.layout.image_opacity.clear();
         self.layout.image_groups.clear();
-        self.layout.image_cut_paths.clear();
+        self.layout.image_cut_paths.clear();self.layout.svg_sources.clear();self.svg_previews.clear();
         self.clear_selection();
         self.drag = None;
         self.duplicate_step = None;
@@ -783,7 +797,10 @@ impl A4Studio {
 
     fn load(&mut self, path: PathBuf, ctx: &egui::Context) {
         match crate::image_import::read_file(&path) {
-            Ok(image) => self.install_single_image(image.bytes, image.name, ctx),
+            Ok(image) => {
+                self.install_single_image(image.bytes, image.name, ctx);
+                if self.art.is_some() && let Some(svg)=image.svg {self.layout.svg_sources.insert(0,svg);}
+            },
             Err(error) => self.status = error.to_string(),
         }
     }
@@ -1103,67 +1120,49 @@ impl A4Studio {
         let modal = crate::ui_theme::dialog_modal(ctx, "page-size-dialog").show(ctx, |ui| {
             ui.set_width(320.);
             cancel |= crate::ui_theme::dialog_header(ui,"Page size",true);
-            egui::ComboBox::from_id_salt("page-size-preset")
-                .selected_text("Paper presets")
-                .width(305.)
-                .show_ui(ui, |ui| {
-                    for &(name, width, height) in sheet::PAPER_PRESETS {
-                        if ui
-                            .selectable_label(
-                                false,
-                                format!("{name}   {}", draft.unit.size(width, height)),
-                            )
-                            .clicked()
-                        {
-                            draft.width = width;
-                            draft.height = height;
-                            draft.error = None;
-                        }
-                    }
-                });
-            ui.add_space(10.);
+            let preset=sheet::PAPER_PRESETS.iter().find(|(_,w,h)|
+                ((draft.width-*w).abs()<0.01 && (draft.height-*h).abs()<0.01)
+                || ((draft.width-*h).abs()<0.01 && (draft.height-*w).abs()<0.01))
+                .map_or("Custom size",|(name,_,_)|*name);
             egui::Grid::new("manual-page-size")
-                .num_columns(2)
-                .spacing([30., 10.])
-                .show(ui, |ui| {
+                .num_columns(3)
+                .min_col_width(0.)
+                .spacing([12.,8.])
+                .show(ui,|ui| {
+                    ui.allocate_ui_with_layout(egui::vec2(62.,28.),egui::Layout::left_to_right(egui::Align::Center),|ui| {ui.label("Paper");});
+                    egui::ComboBox::from_id_salt("page-size-preset")
+                        .selected_text(preset).width(184.)
+                        .show_ui(ui,|ui| {
+                            for &(name,width,height) in sheet::PAPER_PRESETS {
+                                if ui.selectable_label(preset==name,format!("{name}   {}",draft.unit.size(width,height))).clicked() {
+                                    draft.width=width;draft.height=height;draft.error=None;
+                                }
+                            }
+                        });
+                    ui.label("");ui.end_row();
                     ui.label("Units");
                     ui.horizontal(|ui| {
-                        for (label, unit) in
-                            [("mm", Unit::Mm), ("cm", Unit::Cm), ("in", Unit::Inches)]
-                        {
-                            ui.selectable_value(&mut draft.unit, unit, label);
+                        ui.spacing_mut().item_spacing.x=4.;
+                        for (label,unit) in [("mm",Unit::Mm),("cm",Unit::Cm),("in",Unit::Inches)] {
+                            ui.selectable_value(&mut draft.unit,unit,label);
                         }
                     });
-                    ui.end_row();
+                    ui.label("");ui.end_row();
                     ui.label("Width");
-                    ui.add(
-                        draft
-                            .unit
-                            .distance(&mut draft.width)
-                            .range(50. ..=630.)
-                            .speed(1.),
-                    );
+                    if ui.add_sized([184.,28.],draft.unit.distance(&mut draft.width).range(50. ..=630.).speed(1.)).changed() {draft.error=None;}
+                    if icon_button(ui,Icon::Swap,"Swap width and height") {
+                        std::mem::swap(&mut draft.width,&mut draft.height);draft.error=None;
+                    }
                     ui.end_row();
                     ui.label("Height");
-                    ui.add(
-                        draft
-                            .unit
-                            .distance(&mut draft.height)
-                            .range(50. ..=2000.)
-                            .speed(1.),
-                    );
-                    ui.end_row();
+                    if ui.add_sized([184.,28.],draft.unit.distance(&mut draft.height).range(50. ..=2000.).speed(1.)).changed() {draft.error=None;}
+                    ui.label("");ui.end_row();
                 });
-            ui.add_space(10.);
-            if icon_button(ui, Icon::Swap, "Swap width / height") {
-                std::mem::swap(&mut draft.width, &mut draft.height);
-                draft.error = None;
-            }
             if let Some(error) = &draft.error {
                 ui.add_space(8.);
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            ui.add_space(10.);
+            ui.add_space(6.);
             ui.separator();
             crate::ui_theme::dialog_actions(ui,|ui| {
                 apply = crate::ui_theme::primary_button(ui,"Apply").clicked();
@@ -1278,6 +1277,7 @@ impl A4Studio {
             self.show_new = false;
         }
         if create {
+            self.svg_previews.clear();
             self.back = Default::default();
             self.show_back = false;
             self.print_back = false;
@@ -1443,7 +1443,7 @@ impl A4Studio {
         }
     }
     fn swap_object_edit(&mut self, edit: ObjectEdit, ctx: &egui::Context) -> ObjectEdit {
-        self.drag = None;self.design_drag=None;self.shape_selection.clear();
+        self.drag = None;self.design_drag=None;self.shape_group_drag=None;self.shape_selection.clear();
         match edit {
             ObjectEdit::Shaping(shapes,paths)=> {
                 self.selected_design=None;self.selected_cut_shape=None;self.cut_shape_drag=None;self.preview_cache=None;
@@ -1492,7 +1492,8 @@ impl A4Studio {
                 std::mem::swap(&mut self.layout.hidden_images, &mut layout.hidden_images);
                 std::mem::swap(&mut self.layout.image_groups, &mut layout.image_groups);
                 std::mem::swap(&mut self.layout.image_cut_paths, &mut layout.image_cut_paths);
-                self.clear_selection();
+                std::mem::swap(&mut self.layout.svg_sources,&mut layout.svg_sources);std::mem::swap(&mut self.layout.image_opacity,&mut layout.image_opacity);
+                self.svg_previews.clear();self.clear_selection();
                 self.retrace(ctx);
                 ObjectEdit::Layers(layout)
             }
@@ -1598,7 +1599,7 @@ impl A4Studio {
             .and_then(|i| self.layout.manual_cut_paths.get(i))
         {
             let [x0, y0, x1, y1] = cut_tools::bounds(path);
-            if [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            if crate::design_transform::handles([x0,y0,x1,y1])
                 .iter()
                 .any(|&[x, y]| (x - point[0]).hypot(y - point[1]) <= tolerance)
             {
@@ -1644,8 +1645,8 @@ impl A4Studio {
         if self.drawing_mode!=0 {
             if self.layout.design_shapes.len()>=100 {self.status="Design shape limit reached.".into();return;}
             self.record_layer_edit(ObjectEdit::Designs(self.layout.design_shapes.clone()));
-            self.layout.design_shapes.push(sheet::DesignShape{path,
-                fill:if self.design_fill_enabled{Some(self.design_fill.to_array())}else{None},
+            let fill=if self.design_fill_enabled && path.first()==path.last(){Some(self.design_fill.to_array())}else{None};
+            self.layout.design_shapes.push(sheet::DesignShape{path,fill,
                 stroke:self.design_stroke.to_array(),stroke_width:self.design_stroke_width,
                 print:true,cut:self.drawing_mode==2});
             self.selected_design=Some(self.layout.design_shapes.len()-1);
@@ -1692,6 +1693,8 @@ impl A4Studio {
         scale: f32,
         panning: bool,
     ) {
+        if self.cut_draft.is_some() && !response.ctx.wants_keyboard_input()
+            && response.ctx.input(|i| i.key_pressed(egui::Key::Escape)) {self.cut_draft=None;return;}
         if self.cut_draft.as_ref().is_some_and(|draft| draft.tool == Tool::Pen)
             && !response.ctx.wants_keyboard_input()
         {
@@ -1718,7 +1721,7 @@ impl A4Studio {
         let pointer = response
             .interact_pointer_pos()
             .or_else(|| response.hover_pos())
-            .filter(|p| !panning && canvas.contains(*p) && page.contains(*p));
+            .filter(|p| !panning && canvas.contains(*p) && (page.contains(*p) || draft.tool==Tool::Line && draft.drag_start.is_some()));
         if draft.tool == Tool::Pen {
             if response.ctx.input(|i| i.key_pressed(egui::Key::Backspace)) && !response.ctx.wants_keyboard_input() {
                 draft.anchors.pop();
@@ -1743,7 +1746,7 @@ impl A4Studio {
             } else { point }
         };
         let primary = egui::PointerButton::Primary;
-        if !panning && response.drag_started_by(primary) {
+        if !panning && (response.drag_started_by(primary) || draft.tool!=Tool::Pen && response.is_pointer_button_down_on() && response.ctx.input(|i|i.pointer.primary_pressed())) {
             draft.drag_start = response
                 .ctx
                 .input(|i| i.pointer.press_origin())
@@ -1755,20 +1758,28 @@ impl A4Studio {
         if draft.tool != Tool::Pen {
             if let (Some(start), Some(pointer)) = (draft.drag_start, pointer) {
                 let equal = response.ctx.input(|i| i.modifiers.shift);
-                let path = cut_tools::shape_path(
+                let mut path = cut_tools::shape_path(
                     draft.tool,
                     start,
                     to_page(pointer),
                     equal,
                     self.cut_corner_radius,
                 );
+                if draft.tool==Tool::Line && path.len()==2 {
+                    path[1]=cut_tools::clip_line_end(path[0],path[1],[self.layout.page_width,self.layout.page_height]);
+                    if (path[1][0]-path[0][0]).hypot(path[1][1]-path[0][1])<0.2 {path.clear();}
+                }
                 if stop && !path.is_empty() {
                     self.commit_manual_cut(path);
                     return;
                 }
-                for edge in path.windows(2) {
-                    painter.line_segment([screen(edge[0]), screen(edge[1])], stroke);
-                }
+                let mut points:Vec<_>=path.iter().copied().map(screen).collect();
+                let closed=path.len()>2 && path.first()==path.last();
+                if closed && self.drawing_mode!=0 && self.design_fill_enabled {
+                    points.pop();
+                    painter.add(egui::Shape::convex_polygon(points,self.design_fill,stroke));
+                }else {painter.add(egui::Shape::line(points,stroke));}
+                response.ctx.request_repaint();
             }
             if stop {
                 draft.drag_start = None;
@@ -1912,7 +1923,7 @@ impl A4Studio {
         };
         let corners = |path: &[mc630_plt_studio::Point]| {
             let [x0, y0, x1, y1] = cut_tools::bounds(path);
-            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(screen)
+            crate::design_transform::handles([x0,y0,x1,y1]).map(screen)
         };
         let content = if self.rulers {
             egui::Rect::from_min_max(view.min + egui::vec2(28., 23.), view.max)
@@ -2012,7 +2023,7 @@ impl A4Studio {
             let corners = corners(path);
             let ink = egui::Color32::from_rgb(30, 95, 180);
             let stroke = egui::Stroke::new(1_f32, ink);
-            painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
+            painter.add(egui::Shape::closed_line(corners[..4].to_vec(), stroke));
             for p in corners {
                 let handle = egui::Rect::from_center_size(p, egui::vec2(7., 7.));
                 painter.rect(
@@ -2071,6 +2082,8 @@ impl A4Studio {
         let mut new_groups = std::collections::BTreeMap::new();
         for (new, (old, _)) in (first..).zip(members) {
             if let Some(paths)=before.image_cut_paths_for(*old) {self.layout.image_cut_paths.insert(new,paths.clone());}
+            self.layout.image_opacity.insert(new,before.opacity_for(*old));
+            if let Some(svg)=before.svg_source_for(*old) {self.layout.svg_sources.insert(new,svg.clone());}
             if let Some(id) = before.image_groups.get(old) {
                 let duplicate_group = *new_groups.entry(*id)
                     .or_insert_with(|| next_group_id(&self.layout.image_groups));
@@ -2140,9 +2153,9 @@ impl A4Studio {
             let name = std::mem::replace(&mut self.name, "No image selected".into());
             self.layout.custom.clear();
             self.layout.image_tiles.clear();
-            self.layout.hidden_images.clear();
+            self.layout.hidden_images.clear();self.layout.image_opacity.clear();
             self.layout.image_groups.clear();
-            self.layout.image_cut_paths.clear();
+            self.layout.image_cut_paths.clear();self.layout.svg_sources.clear();self.svg_previews.clear();
             self.layout.count = 1;
             self.art = None;
             self.texture = None;
@@ -2152,6 +2165,9 @@ impl A4Studio {
         } else {
             self.layout.count = keep.len();
             self.layout.custom = keep.iter().map(|(_, p)| *p).enumerate().collect();
+            self.layout.image_opacity=keep.iter().enumerate().map(|(new,(old,_))|(new,before.opacity_for(*old))).collect();
+            self.layout.svg_sources=keep.iter().enumerate().filter_map(|(new,(old,_))|before.svg_source_for(*old).cloned().map(|svg|(new,svg))).collect();
+            self.svg_previews.clear();
             self.layout.image_cut_paths=keep.iter().enumerate().filter_map(|(new,(old,_))|
                 before.image_cut_paths_for(*old).cloned().map(|paths|(new,paths))).collect();
             self.layout.hidden_images = keep
@@ -2289,53 +2305,6 @@ impl A4Studio {
             0.
         }
     }
-    fn selected_properties(&mut self, ui: &mut egui::Ui) {
-        let Some(index) = self.selected else {
-            return;
-        };
-        let Ok(items) = self.layout.editor_items() else {
-            return;
-        };
-        let Some(original) = items.get(index).copied() else {
-            self.clear_selection();
-            return;
-        };
-        let mut p = original;
-        ui.strong(format!("Image {}", index + 1)).on_hover_text(
-            "Arrow keys: move selection. Configure normal and Shift steps in File > Settings.",
-        );
-        ui.label("X");
-        let x = ui
-            .add(self.unit.distance(&mut p.x).speed(0.1).fixed_decimals(2))
-            .changed();
-        ui.label("Y");
-        let y = ui
-            .add(self.unit.distance(&mut p.y).speed(0.1).fixed_decimals(2))
-            .changed();
-        ui.label("W");
-        let w = ui
-            .add(
-                self.unit
-                    .distance(&mut p.width)
-                    .speed(0.1)
-                    .fixed_decimals(2)
-                    .range(1.0..=self.layout.page_width),
-            )
-            .changed();
-        ui.label("H");
-        let h = ui
-            .add(
-                self.unit
-                    .distance(&mut p.height)
-                    .speed(0.1)
-                    .fixed_decimals(2)
-                    .range(1.0..=self.layout.page_height),
-            )
-            .changed();
-        if x || y || w || h {
-            self.apply_selected_dimensions(index, original, p, w, h);
-        }
-    }
     fn apply_selected_dimensions(
         &mut self,
         index: usize,
@@ -2374,12 +2343,9 @@ impl A4Studio {
         page: egui::Rect,
         scale: f32,
     ) {
-        if self.art.is_none() {
-            return;
-        }
-        let Ok(items) = self.layout.editor_items() else {
-            return;
-        };
+        let items=if self.art.is_some() {
+            let Ok(items)=self.layout.editor_items() else{return};items
+        }else{vec![]};
         let screen = |p: sheet::Placement| {
             egui::Rect::from_min_size(
                 page.min + egui::vec2(p.x as f32 * scale, p.y as f32 * scale),
@@ -2463,22 +2429,41 @@ impl A4Studio {
                     });
                 } else {
                     let previous = if modifiers.ctrl || modifiers.shift { self.selection.clone() } else { Default::default() };
-                    self.marquee = Some((start, previous));
+                    let mut previous_shapes=if modifiers.ctrl || modifiers.shift {self.shape_selection.clone()}else{vec![]};
+                    if modifiers.ctrl || modifiers.shift {
+                        for target in self.selected_design.map(crate::shape_ops::Target::Design).into_iter().chain(self.selected_cut_shape.map(crate::shape_ops::Target::Cut)) {
+                            if !previous_shapes.contains(&target) {previous_shapes.push(target);}
+                        }
+                    }
+                    self.marquee = Some((start, previous,previous_shapes));
+                    self.pick_cut_shapes=false;
                     self.selected_design = None;
                     self.selected_cut_shape = None;
                     self.selected_guide = None;
                 }
             }
         }
-        if let Some((start, previous)) = self.marquee.clone() {
+        if let Some((start, previous,previous_shapes)) = self.marquee.clone() {
             if let Some(pointer) = pointer {
                 let bounds = egui::Rect::from_two_pos(start, pointer);
-                self.selection = previous;
+                self.selection = previous;self.shape_selection=previous_shapes;
                 if bounds.width() > 3. || bounds.height() > 3. {
                     for (index, placement) in items.iter().enumerate() {
                         if !self.layout.hidden_images.contains(&index) && bounds.intersects(screen(*placement)) {
                             let members: Vec<_> = self.group_members(index).collect();
                             self.selection.extend(members);
+                        }
+                    }
+                    let a=(bounds.min-page.min)/scale;let b=(bounds.max-page.min)/scale;
+                    let rect=[a.x as f64,a.y as f64,b.x as f64,b.y as f64];
+                    for (index,shape) in self.layout.design_shapes.iter().enumerate() {
+                        let target=crate::shape_ops::Target::Design(index);
+                        if (shape.print || self.show_cut && shape.cut) && cut_tools::intersects_box(&shape.path,rect) && !self.shape_selection.contains(&target) {self.shape_selection.push(target);}
+                    }
+                    if self.show_cut {
+                        for (index,path) in self.layout.manual_cut_paths.iter().enumerate() {
+                            let target=crate::shape_ops::Target::Cut(index);
+                            if cut_tools::intersects_box(path,rect) && !self.shape_selection.contains(&target) {self.shape_selection.push(target);}
                         }
                     }
                     ui.painter().rect(bounds, 0., crate::ui_theme::ACCENT.linear_multiply(0.12),
@@ -2489,6 +2474,9 @@ impl A4Studio {
             }
             if ui.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
                 self.marquee = None;
+                self.selected_design=if self.shape_selection.len()==1 {self.shape_selection.iter().find_map(|t|if let crate::shape_ops::Target::Design(i)=t {Some(*i)}else{None})}else{None};
+                self.selected_cut_shape=if self.shape_selection.len()==1 {self.shape_selection.iter().find_map(|t|if let crate::shape_ops::Target::Cut(i)=t {Some(*i)}else{None})}else{None};
+                self.pick_cut_shapes=self.selected_cut_shape.is_some();
             }
             return;
         }
@@ -2775,10 +2763,14 @@ impl A4Studio {
             };
         } else if self.source.is_empty() {
             self.install_image_fitted(image.bytes, image.name, ctx);
+            if self.art.is_some() && let Some(svg)=image.svg {self.layout.svg_sources.insert(0,svg);}
         } else {
             let result = crate::photo_size::append_image_bytes(
                 &self.layout, &self.source, &image.bytes, self.edit_inset(),
-            );
+            ).map(|(source,mut layout)| {
+                if let Some(mut svg)=image.svg {svg.raster_rect=layout.image_tiles[layout.count-1];layout.svg_sources.insert(layout.count-1,svg);}
+                (source,layout)
+            });
             self.finish_add_image(result, ctx);
         }
     }
@@ -3039,6 +3031,7 @@ impl A4Studio {
                 layout.use_manual_cut_paths = true;
                 layout.count = group.tiles.len();
                 layout.image_tiles = group.tiles;
+                layout.svg_sources=group.svg_sources;self.svg_previews.clear();
                 layout.custom = group
                     .placements
                     .into_iter()
@@ -3140,6 +3133,9 @@ impl A4Studio {
                     if ui.add(egui::Button::new("Import image...").shortcut_text("Ctrl+O")).clicked() {
                         ui.close_menu();
                         if self.show_back { self.import_back_image(); } else { self.choose_image(ctx); }
+                    }
+                    if ui.add_enabled(self.art.is_some() && !self.show_back,egui::Button::new("Vector Trace…")).clicked() {
+                        ui.close_menu();self.open_vector_trace(ctx);
                     }
                     if ui.button("Import image from URL…").clicked() {
                         ui.close_menu();
@@ -3484,6 +3480,7 @@ impl A4Studio {
                 let anchors = draft.map_or(0, |draft| draft.anchors.len());
                 let (icon, label) = match tool {
                     Some(Tool::Pen) => (Icon::Pen, "Pen"),
+                    Some(Tool::Line) => (Icon::Line, "Line"),
                     Some(Tool::Ellipse) => (Icon::Ellipse, "Ellipse"),
                     Some(Tool::Rectangle) => (Icon::Rectangle, "Rectangle"),
                     None => (Icon::Select, "Select"),
@@ -3496,6 +3493,13 @@ impl A4Studio {
                         let clicked=ui.add_enabled_ui(self.shape_selection.len()>=2,|ui|crate::shape_ops::button(ui,operation)).inner;
                         if clicked {self.apply_shape_operation(operation);}
                     }
+                    if self.shape_selection.len()>1 {
+                        for (icon,angle) in [(Icon::RotateLeft,-90.),(Icon::RotateRight,90.)] {if icon_button(ui,icon,"Rotate selected objects 90 degrees") {self.transform_shape_group(angle,false,false);}}
+                        if icon_button(ui,Icon::FlipHorizontal,"Flip selected objects horizontally") {self.transform_shape_group(0.,true,false);}
+                        if icon_button(ui,Icon::FlipVertical,"Flip selected objects vertically") {self.transform_shape_group(0.,false,true);}
+                        ui.label("Rotate by");ui.add(egui::DragValue::new(&mut self.shape_angle).range(-360. ..=360.).suffix("°").update_while_editing(false));
+                        if icon_button(ui,Icon::Check,"Apply rotation to selected objects") {self.transform_shape_group(self.shape_angle,false,false);self.shape_angle=0.;}
+                    }
                     ui.separator();
                 }
                 if tool.is_some() || self.selected_design.is_some() {
@@ -3506,14 +3510,16 @@ impl A4Studio {
                     }
                     if self.drawing_mode!=0 {
                         ui.separator();
-                        changed|=ui.checkbox(&mut self.design_fill_enabled,"Fill").changed();
-                        if self.design_fill_enabled {changed|=crate::color_dialog::button(ui, "Fill color", &mut self.design_fill).changed();}
+                        if tool!=Some(Tool::Line) && before.as_ref().is_none_or(|shape|shape.path.first()==shape.path.last()) {
+                            changed|=ui.checkbox(&mut self.design_fill_enabled,"Fill").changed();
+                            if self.design_fill_enabled {changed|=crate::color_dialog::button(ui, "Fill color", &mut self.design_fill).changed();}
+                        }
                         ui.label("Stroke");changed|=crate::color_dialog::button(ui, "Stroke color", &mut self.design_stroke).changed();
                         changed|=ui.add(self.unit.distance(&mut self.design_stroke_width).range(0. ..=20.).speed(0.05)).changed();
                     }
                     if changed && let Some(index)=self.selected_design && let Some(mut shape)=before {
                         self.record_layer_edit(ObjectEdit::Designs(self.layout.design_shapes.clone()));
-                        shape.fill=if self.design_fill_enabled{Some(self.design_fill.to_array())}else{None};
+                        shape.fill=if self.design_fill_enabled && shape.path.first()==shape.path.last(){Some(self.design_fill.to_array())}else{None};
                         shape.stroke=self.design_stroke.to_array();shape.stroke_width=self.design_stroke_width;
                         shape.print=self.drawing_mode!=0;shape.cut=self.drawing_mode!=1;
                         self.layout.design_shapes[index]=shape;
@@ -3568,6 +3574,7 @@ impl A4Studio {
                             self.finish_manual_cut(true);
                         }
                     }
+                    Some(Tool::Line) => {ui.small("Drag to draw · Shift: 45° steps · Esc: cancel");}
                     Some(Tool::Ellipse) => {
                         ui.small("Shift for circle");
                     }
@@ -3862,68 +3869,6 @@ impl A4Studio {
             ui.add_space(1.);
         });
 
-        egui::TopBottomPanel::bottom("property-bar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.small("Control");
-                ui.separator();
-                if ui.button(format!("{}  {}",self.layout.paper_label(),self.unit.size(self.layout.page_width,self.layout.page_height)))
-                    .on_hover_text("Change page width and height").clicked() { self.open_page_size(); }
-                ui.separator();
-                if self.selection.len()>1 {
-                    ui.strong(format!("{} images selected",self.selection.len()));
-                    ui.small("Drag to move / corners to resize").on_hover_text("Arrow keys: move selection. Shift + Arrow: larger step. Configure steps in File > Settings. Ctrl+Z: Undo.");
-                } else if self.selected.is_some() {
-                    self.selected_properties(ui);
-                } else {
-                    ui.label("W");
-                    if ui
-                        .add(
-                            self.unit.distance(&mut self.layout.width)
-                                .speed(0.1)
-                                .range(1.0..=self.layout.page_width - 10.)
-                                ,
-                        )
-                        .changed()
-                        && self.lock
-                    {
-                        self.layout.height = self.layout.width / self.ratio;
-                    }
-                    ui.label("H");
-                    if ui
-                        .add(
-                            self.unit.distance(&mut self.layout.height)
-                                .speed(0.1)
-                                .range(1.0..=self.layout.page_height - 10.)
-                                ,
-                        )
-                        .changed()
-                        && self.lock
-                    {
-                        self.layout.width = self.layout.height * self.ratio;
-                    }
-                }
-                ui.label("Copies");
-                ui.add_enabled(self.layout.image_tiles.is_empty(), egui::DragValue::new(&mut self.layout.count).update_while_editing(false).range(1..=1000));
-                ui.label("Border");
-                ui.add(
-                    self.unit.distance(&mut self.layout.contour_offset)
-                        .speed(0.1)
-                        .range(-5.0..=5.0)
-                        ,
-                );
-                ui.separator();
-                if ui.small_button("-").on_hover_text("Zoom out").clicked() {
-                    self.camera.zoom_to(ctx, self.camera.target_zoom(self.zoom) / 1.25);
-                }
-                ui.label(format!("{:.0}%", self.zoom * 100.)).on_hover_text("Ctrl + mouse wheel: zoom at pointer. Space + left drag: pan. Fit page resets the view.");
-                if ui.small_button("+").on_hover_text("Zoom in").clicked() {
-                    self.camera.zoom_to(ctx, self.camera.target_zoom(self.zoom) * 1.25);
-                }
-                if icon_button(ui, Icon::Fit, "Fit page") {
-                    self.camera.fit(ctx);
-                }
-            });
-        });
         if self.show_guide {
             egui::Window::new("Print & Cut workflow").open(&mut self.show_guide).collapsible(false).resizable(false).show(ctx,|ui|{
                 ui.label("1. Import an image and choose frame / object / transparent outline.");
@@ -3947,6 +3892,7 @@ impl A4Studio {
                     let active = self.cut_draft.as_ref().map(|draft| draft.tool);
                     for (tool, icon, name) in [
                         (Tool::Pen, Icon::Pen, "Pen cut tool"),
+                        (Tool::Line, Icon::Line, "Line tool — Design / Cutline"),
                         (Tool::Ellipse, Icon::Ellipse, "Circle / ellipse cut tool"),
                         (Tool::Rectangle, Icon::Rectangle, "Rectangle cut tool"),
                     ] {
@@ -3983,7 +3929,8 @@ impl A4Studio {
                     origin_offset,
                     &mut self.zoom,
                     &mut self.canvas_pan,
-                    self.drag.is_none() && self.guide_drag.is_none() && self.cut_shape_drag.is_none(),
+                    self.drag.is_none() && self.guide_drag.is_none() && self.cut_shape_drag.is_none() && self.shape_group_drag.is_none()
+                        && !self.cut_draft.as_ref().is_some_and(|draft|draft.drag_start.is_some()),
                 );
                 let canvas = ui.scope(|ui| {
                         let (area, canvas_response) =
@@ -4057,7 +4004,8 @@ impl A4Studio {
                         };
 
                         let view = viewport_rect;
-                        let design_gesture=self.design_canvas(ui,&canvas_response,page,scale,pan_gesture);
+                        let design_gesture=self.shape_group_canvas(ui,&canvas_response,page,scale,pan_gesture)
+                            || self.design_canvas(ui,&canvas_response,page,scale,pan_gesture);
                         if self.cut_draft.is_none() && self.crop_edit.is_none() && !design_gesture {
                             let guide_gesture =
                                 self.update_ruler_guides(ui, view, page, scale, pan_gesture);
@@ -4084,7 +4032,14 @@ impl A4Studio {
                                         );
 
                                         let uv = self.image_uv(i, a);
-                                        paint_oriented_image(&painter, texture.id(), r, uv, p.orientation, egui::Color32::WHITE);
+                                        let needs_vector=r.intersects(painter.clip_rect()) && (r.width()*ui.ctx().pixels_per_point()>uv.width()*a.pixels.width() as f32 || r.height()*ui.ctx().pixels_per_point()>uv.height()*a.pixels.height() as f32);
+                                        if let Some(asset)=needs_vector.then(||self.layout.svg_source_for(i).cloned()).flatten() {
+                                            let mut svg_layout=self.layout.clone();svg_layout.svg_sources.clear();svg_layout.svg_sources.insert(i,asset);svg_layout.design_shapes.clear();
+                                            svg_layout.hidden_images=(0..svg_layout.count).filter(|index|*index!=i).collect();
+                                            let preview=self.svg_previews.entry(i).or_default();
+                                            if !preview.has_base() {paint_oriented_image(&painter,texture.id(),r,uv,p.orientation,egui::Color32::from_white_alpha(self.layout.opacity_for(i)));}
+                                            if let Err(error)=preview.paint(ui.ctx(),&painter,page,&svg_layout) {self.status=error;}
+                                        }else{paint_oriented_image(&painter, texture.id(), r, uv, p.orientation, egui::Color32::from_white_alpha(self.layout.opacity_for(i)));}
                                     }
 
                                     if self.show_cut && self.layout.items().is_ok() && (!self.layout.use_manual_cut_paths || self.layout.has_manual_cuts()) {
@@ -4211,7 +4166,7 @@ impl A4Studio {
                             page,
                             view,
                             scale,
-                            pan_gesture,
+                            pan_gesture || design_gesture,
                         );
                         if self.crop_edit.is_none() { self.draw_selection(&painter, page, scale); }
                         self.manual_cut_canvas(
@@ -4233,6 +4188,7 @@ impl A4Studio {
                     self.draw_fixed_rulers(&painter, area, page, scale);
                 }
             });
+        self.vector_trace_dialog(ctx);
         self.layout_overflow_notice(ctx);
         self.print_dialog(ctx);
         if self.pending_action.is_none() {
@@ -5493,12 +5449,31 @@ impl A4Studio {
             if ui.selectable_label(self.selected_design==Some(index),format!("Shape {} · {}",index+1,mode)).clicked() {design_clicked=Some(index);}
         }
         if let Some(index)=design_clicked {
+            self.select_shape(crate::shape_ops::Target::Design(index),ui.input(|i|i.modifiers.shift));
             let shape=self.layout.design_shapes[index].clone();
             self.selected_design=Some(index);self.clear_selection();self.cut_draft=None;
             self.drawing_mode=if shape.print && shape.cut {2}else if shape.print {1}else{0};
             self.design_fill_enabled=shape.fill.is_some();
             if let Some(c)=shape.fill {self.design_fill=egui::Color32::from_rgba_unmultiplied(c[0],c[1],c[2],c[3]);}
             let c=shape.stroke;self.design_stroke=egui::Color32::from_rgba_unmultiplied(c[0],c[1],c[2],c[3]);self.design_stroke_width=shape.stroke_width;
+        }
+        if let Some(index)=self.selection.iter().next().copied() {
+            let mut percent=self.layout.opacity_for(index) as f32/255.*100.;
+            let before_id=ui.id().with("image-opacity-before");
+            let response=ui.add(crate::ui_theme::small_slider(egui::Slider::new(&mut percent,0. ..=100.).text("Opacity").suffix("%")));
+            if response.changed() {
+                let before=self.layout.clone();
+                if response.dragged() && ui.data(|data|data.get_temp::<Layout>(before_id)).is_none() {
+                    ui.data_mut(|data|data.insert_temp(before_id,before.clone()));
+                }
+                for selected in &self.selection {self.layout.image_opacity.insert(*selected,(percent*2.55).round() as u8);}
+                if !response.dragged() {self.record_layer_edit(ObjectEdit::Layers(Box::new(before)));}
+            }
+            if response.drag_stopped() {
+                if let Some(before)=ui.data_mut(|data|data.remove_temp::<Layout>(before_id)) {
+                    self.record_layer_edit(ObjectEdit::Layers(Box::new(before)));
+                }
+            }
         }
         let (Some(art), Some(texture)) = (&self.art, &self.texture) else {
             if self.layout.design_shapes.is_empty() {ui.weak("Import an image or draw a shape.");}
@@ -5510,19 +5485,26 @@ impl A4Studio {
         };
         let mut clicked = None;
         let mut visibility_clicked = None;
-        let mut link_clicked=None;
+        let mut link_clicked=None;let mut image_cut_clicked=None;
         egui::ScrollArea::vertical()
             .id_salt("image-layers")
             .auto_shrink([false, false])
-            .show_rows(ui, 44., items.len(), |ui, rows| {
+            .show_rows(ui, 66., items.len(), |ui, rows| {
                 for row in rows {
                     // The last image is drawn on top on the canvas.
                     let index = items.len() - 1 - row;
                     let item = items[index];
                     let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 44.),
+                        egui::vec2(ui.available_width(), 66.),
                         egui::Sense::hover(),
                     );
+                    let cut_rect=egui::Rect::from_min_max(rect.min+egui::vec2(34.,44.),rect.max);
+                    if !self.layout.use_manual_cut_paths || self.layout.image_cut_paths_for(index).is_some_and(|paths|!paths.is_empty()) {
+                        let cut=ui.interact(cut_rect,ui.id().with(("image-cutline",index)),egui::Sense::click());
+                        ui.painter().text(cut_rect.left_center(),egui::Align2::LEFT_CENTER,if self.layout.use_manual_cut_paths {"Manual cutline"}else{"Auto cutline"},egui::FontId::proportional(12.),crate::ui_theme::ACCENT);
+                        if cut.clicked() {image_cut_clicked=Some(index);}
+                    }
+                    let rect=egui::Rect::from_min_max(rect.min,rect.max-egui::vec2(0.,22.));
                     let eye = egui::Rect::from_min_max(
                         rect.min,
                         egui::pos2(rect.left() + 32., rect.bottom()),
@@ -5633,6 +5615,7 @@ impl A4Studio {
                     }
                 }
             });
+        if let Some(index)=image_cut_clicked {self.clear_selection();self.select_target(index,false,false);self.selected_design=None;self.selected_cut_shape=None;self.open_sidebar_section(2);}
         if let Some((index,linked))=link_clicked {self.toggle_layer_cutline_link(index,linked);}
         if let Some(index) = visibility_clicked {
             let before = self.layout.hidden_images.clone();
@@ -5817,8 +5800,86 @@ impl A4Studio {
         if acknowledged || dialog.should_close() {self.overflow_warning_seen=true;self.overflow_warning_open=false;}
     }
 
+    fn selected_shape_points(&self)->(Vec<crate::shape_ops::Target>,Vec<usize>,Vec<mc630_plt_studio::Point>) {
+        let mut targets=vec![];let mut lengths=vec![];let mut points=vec![];
+        for target in &self.shape_selection {
+            let path=match target {crate::shape_ops::Target::Design(i)=>self.layout.design_shapes.get(*i).map(|s|&s.path),crate::shape_ops::Target::Cut(i)=>self.layout.manual_cut_paths.get(*i)};
+            if let Some(path)=path.filter(|p|!p.is_empty()) {targets.push(*target);lengths.push(path.len());points.extend_from_slice(path);}
+        }
+        (targets,lengths,points)
+    }
+    fn set_shape_group_points(&mut self,targets:&[crate::shape_ops::Target],lengths:&[usize],points:&[mc630_plt_studio::Point]) {
+        let mut offset=0;
+        for (target,&length) in targets.iter().zip(lengths) {
+            let path=match target {crate::shape_ops::Target::Design(i)=>self.layout.design_shapes.get_mut(*i).map(|s|&mut s.path),crate::shape_ops::Target::Cut(i)=>self.layout.manual_cut_paths.get_mut(*i)};
+            if let Some(path)=path {*path=points[offset..offset+length].to_vec();}offset+=length;
+        }
+        self.preview_cache=None;self.back_paths_cache=None;self.last_print=None;
+    }
+    fn shape_group_canvas(&mut self,ui:&egui::Ui,response:&egui::Response,page:egui::Rect,scale:f32,panning:bool)->bool {
+        if self.cut_draft.is_some() || self.crop_edit.is_some() || self.marquee.is_some() || panning {return false;}
+        let (targets,lengths,points)=self.selected_shape_points();
+        if targets.len()<2 && self.shape_group_drag.is_none() {return false;}
+        self.selected_design=None;self.selected_cut_shape=None;self.pick_cut_shapes=false;
+        let pointer=ui.input(|i|i.pointer.interact_pos());
+        let bounds=cut_tools::bounds(&points);
+        let screen=|p:mc630_plt_studio::Point|page.min+egui::vec2(p[0] as f32,p[1] as f32)*scale;
+        let handle=pointer.and_then(|p|crate::design_transform::handles(bounds).iter().position(|q|screen(*q).distance(p)<=8.));
+        let rect=egui::Rect::from_min_max(screen([bounds[0],bounds[1]]),screen([bounds[2],bounds[3]]));
+        let mut over=pointer.is_some_and(|p|response.rect.contains(p) && ui.ctx().layer_id_at(p)==Some(response.layer_id) && (handle.is_some() || rect.contains(p)));
+        let press=ui.input(|i|i.events.iter().find_map(|event|match event {egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed:true,..}=>Some(*pos),_=>None}));
+        if self.shape_group_drag.is_none() && let Some(start)=press.filter(|p|response.rect.contains(*p) && ui.ctx().layer_id_at(*p)==Some(response.layer_id)) {
+            let handle=crate::design_transform::handles(bounds).iter().position(|q|screen(*q).distance(start)<=8.);
+            let additive=ui.input(|i|i.modifiers.shift || i.modifiers.ctrl);
+            let physical=[(start.x-page.left()) as f64/scale as f64,(start.y-page.top()) as f64/scale as f64];
+            let hit=targets.iter().rev().find(|target| {
+                let path=match target {crate::shape_ops::Target::Design(i)=>self.layout.design_shapes.get(*i).map(|s|&s.path),crate::shape_ops::Target::Cut(i)=>self.layout.manual_cut_paths.get(*i)};
+                path.is_some_and(|path|cut_tools::hit(path,physical,6./scale as f64))
+            }).copied();
+            if handle.is_some() || rect.contains(start) && (!additive || hit.is_some()) {
+                self.design_drag=None;self.cut_shape_drag=None;
+                self.shape_group_drag=Some(ShapeGroupDrag {designs:self.layout.design_shapes.clone(),cuts:self.layout.manual_cut_paths.clone(),targets,lengths,points,start,handle,toggle_click:if additive && handle.is_none(){hit}else{None}});
+            }else if additive {over=false;}
+        }
+        if let Some(drag)=self.shape_group_drag.take() {
+            if ui.input(|i|i.key_pressed(egui::Key::Escape)) {
+                self.layout.design_shapes=drag.designs;self.layout.manual_cut_paths=drag.cuts;self.preview_cache=None;return true;
+            }
+            if let Some(pointer)=pointer {
+                let delta=(pointer-drag.start)/scale;let modifiers=ui.input(|i|i.modifiers);
+                let transformed=if pointer.distance(drag.start)<=2. {drag.points.clone()}else{crate::design_transform::transform(&drag.points,[delta.x as f64,delta.y as f64],drag.handle,modifiers.shift,modifiers.alt,[self.layout.page_width,self.layout.page_height])};
+                self.set_shape_group_points(&drag.targets,&drag.lengths,&transformed);
+            }
+            ui.ctx().set_cursor_icon(drag.handle.map(crate::design_transform::cursor).unwrap_or(egui::CursorIcon::Grabbing));
+            if ui.input(|i|i.pointer.primary_released() || !i.pointer.primary_down()) {
+                if self.layout.design_shapes!=drag.designs || self.layout.manual_cut_paths!=drag.cuts {self.record_layer_edit(ObjectEdit::Shaping(drag.designs,drag.cuts));}
+                if pointer.is_some_and(|p|p.distance(drag.start)<=2.) && let Some(target)=drag.toggle_click {
+                    self.shape_selection.retain(|selected|*selected!=target);
+                    self.selected_design=if self.shape_selection.len()==1 {self.shape_selection.iter().find_map(|t|if let crate::shape_ops::Target::Design(i)=t{Some(*i)}else{None})}else{None};
+                    self.selected_cut_shape=if self.shape_selection.len()==1 {self.shape_selection.iter().find_map(|t|if let crate::shape_ops::Target::Cut(i)=t{Some(*i)}else{None})}else{None};
+                    self.pick_cut_shapes=self.selected_cut_shape.is_some();
+                }
+            }else {self.shape_group_drag=Some(drag);}
+            return true;
+        }
+        if over {ui.ctx().set_cursor_icon(handle.map(crate::design_transform::cursor).unwrap_or(egui::CursorIcon::Grab));}
+        over
+    }
+    fn transform_shape_group(&mut self,degrees:f64,flip_x:bool,flip_y:bool) {
+        if degrees.rem_euclid(360.)==0. && !flip_x && !flip_y {return;}
+        let (targets,lengths,points)=self.selected_shape_points();if targets.len()<2 {return;}
+        let [x0,y0,x1,y1]=cut_tools::bounds(&points);let center=[(x0+x1)/2.,(y0+y1)/2.];
+        let (sin,cos)=degrees.to_radians().sin_cos();
+        let mut next:Vec<_>=points.iter().map(|p| {
+            let x=(p[0]-center[0])*if flip_x {-1.}else{1.};let y=(p[1]-center[1])*if flip_y {-1.}else{1.};
+            [center[0]+cos*x-sin*y,center[1]+sin*x+cos*y]
+        }).collect();
+        if next.iter().any(|p|!(-1e-7..=self.layout.page_width+1e-7).contains(&p[0]) || !(-1e-7..=self.layout.page_height+1e-7).contains(&p[1])) {self.status="Selection would be outside the page.".into();return;}
+        for p in &mut next {p[0]=p[0].clamp(0.,self.layout.page_width);p[1]=p[1].clamp(0.,self.layout.page_height);}
+        if next!=points {self.record_layer_edit(ObjectEdit::Shaping(self.layout.design_shapes.clone(),self.layout.manual_cut_paths.clone()));self.set_shape_group_points(&targets,&lengths,&next);}
+    }
     fn design_canvas(&mut self,ui:&egui::Ui,response:&egui::Response,page:egui::Rect,scale:f32,panning:bool)->bool {
-        if self.cut_draft.is_some() || self.crop_edit.is_some() || panning {return false;}
+        if self.cut_draft.is_some() || self.crop_edit.is_some() || self.marquee.is_some() || panning {return false;}
         let pointer=ui.input(|i|i.pointer.interact_pos());
         let physical=|p:egui::Pos2|[(p.x-page.left()) as f64/scale as f64,(p.y-page.top()) as f64/scale as f64];
         let screen=|p:mc630_plt_studio::Point|page.min+egui::vec2(p[0] as f32,p[1] as f32)*scale;
@@ -5826,14 +5887,14 @@ impl A4Studio {
         if ui.input(|i|i.pointer.primary_pressed()) && let Some(pointer)=pointer.filter(|p|response.rect.contains(*p) && ui.ctx().layer_id_at(*p)==Some(response.layer_id)) {
             let corner=self.selected_design.and_then(|index|self.layout.design_shapes.get(index).and_then(|s| {
                 let [x0,y0,x1,y1]=cut_tools::bounds(&s.path);
-                [[x0,y0],[x1,y0],[x1,y1],[x0,y1]].iter().position(|p|screen(*p).distance(pointer)<9.).map(|corner|(index,corner))
+                crate::design_transform::handles([x0,y0,x1,y1]).iter().position(|p|screen(*p).distance(pointer)<9.).map(|corner|(index,corner))
             }));
             let hit=corner.map(|(i,_)|i).or_else(||self.layout.design_shapes.iter().rposition(|s|cut_tools::hit(&s.path,physical(pointer),6./scale as f64)));
-            self.selected_design=hit;
+            if hit.is_some() {self.selected_design=hit;}
             self.pick_cut_shapes=hit.is_none();
             if let Some(index)=hit {
                 self.select_shape(crate::shape_ops::Target::Design(index),ui.input(|i|i.modifiers.shift));
-                if ui.input(|i|i.modifiers.shift) {self.design_drag=None;return true;}
+                if ui.input(|i|i.modifiers.shift) && corner.is_none() {self.design_drag=None;return true;}
 
                 self.clear_selection();self.pick_cut_shapes=false;self.selected_cut_shape=None;
                 let shape=&self.layout.design_shapes[index];
@@ -5862,7 +5923,7 @@ impl A4Studio {
         }else if let Some(pointer)=pointer.filter(|p| response.rect.contains(*p) && ui.ctx().layer_id_at(*p)==Some(response.layer_id)) {
             if let Some(shape)=self.selected_design.and_then(|i|self.layout.design_shapes.get(i)) {
                 let [x0,y0,x1,y1]=cut_tools::bounds(&shape.path);
-                if let Some(corner)=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]].iter().position(|p|screen(*p).distance(pointer)<9.) {
+                if let Some(corner)=crate::design_transform::handles([x0,y0,x1,y1]).iter().position(|p|screen(*p).distance(pointer)<9.) {
                     ui.ctx().set_cursor_icon(crate::design_transform::cursor(corner));owned=true;
                 }
             }
@@ -5879,6 +5940,15 @@ impl A4Studio {
         owned
     }
     fn paint_design_selection(&self,painter:&egui::Painter,page:egui::Rect,scale:f32) {
+        let (targets,_,points)=self.selected_shape_points();
+        if targets.len()>1 {
+            let bounds=cut_tools::bounds(&points);
+            let screen=|p:mc630_plt_studio::Point|page.min+egui::vec2(p[0] as f32,p[1] as f32)*scale;
+            let stroke=egui::Stroke::new(1_f32,crate::ui_theme::ACCENT);
+            painter.rect_stroke(egui::Rect::from_min_max(screen([bounds[0],bounds[1]]),screen([bounds[2],bounds[3]])),0.,stroke,egui::StrokeKind::Inside);
+            for handle in crate::design_transform::handles(bounds) {painter.rect(egui::Rect::from_center_size(screen(handle),egui::vec2(7.,7.)),0.,egui::Color32::WHITE,stroke,egui::StrokeKind::Inside);}
+            return;
+        }
         for target in &self.shape_selection {
             let path=match target {crate::shape_ops::Target::Design(i)=>self.layout.design_shapes.get(*i).map(|s|&s.path),crate::shape_ops::Target::Cut(i)=>self.layout.manual_cut_paths.get(*i)};
             if let Some(path)=path {
@@ -5890,19 +5960,15 @@ impl A4Studio {
         let [x0,y0,x1,y1]=cut_tools::bounds(&shape.path);
         let rect=egui::Rect::from_min_max(page.min+egui::vec2(x0 as f32,y0 as f32)*scale,page.min+egui::vec2(x1 as f32,y1 as f32)*scale);
         painter.rect_stroke(rect,0.,egui::Stroke::new(1_f32,crate::ui_theme::ACCENT),egui::StrokeKind::Inside);
-        for corner in [rect.left_top(),rect.right_top(),rect.right_bottom(),rect.left_bottom()] {
+        for corner in crate::design_transform::handles([rect.left() as f64,rect.top() as f64,rect.right() as f64,rect.bottom() as f64]).map(|p|egui::pos2(p[0] as f32,p[1] as f32)) {
             painter.rect(egui::Rect::from_center_size(corner,egui::vec2(7.,7.)),0.,egui::Color32::WHITE,egui::Stroke::new(1_f32,crate::ui_theme::ACCENT),egui::StrokeKind::Inside);
         }
     }
     fn paint_designs(&mut self,ctx:&egui::Context,painter:&egui::Painter,page:egui::Rect) {
-        if self.show_cut {
-            for shape in self.layout.design_shapes.iter().filter(|s|s.cut) {
-                let points=shape.path.iter().map(|p|page.min+egui::vec2((p[0]/self.layout.page_width) as f32*page.width(),(p[1]/self.layout.page_height) as f32*page.height())).collect();
-                painter.add(egui::Shape::line(points,egui::Stroke::new(1_f32,self.contour_color)));
-            }
+        if self.layout.has_print_designs() && !self.design_preview.paint_simple(painter,page,&self.layout) {
+            let mut design_layout=self.layout.clone();design_layout.svg_sources.clear();
+            if let Err(error)=self.design_preview.paint(ctx,painter,page,&design_layout) {self.status=error;}
         }
-        if !self.layout.has_print_designs() {return;}
-        if let Err(error)=self.design_preview.paint(ctx,painter,page,&self.layout) {self.status=error;}
         if self.show_cut {
             for shape in self.layout.design_shapes.iter().filter(|s|s.cut) {
                 let points=shape.path.iter().map(|p|page.min+egui::vec2((p[0]/self.layout.page_width) as f32*page.width(),(p[1]/self.layout.page_height) as f32*page.height())).collect();
@@ -5969,6 +6035,36 @@ impl A4Studio {
         }
     }
 
+    fn open_vector_trace(&mut self,ctx:&egui::Context) {
+        let Some(art)=&self.art else{return};
+        let index=self.selected.or_else(||self.selection.iter().next().copied()).unwrap_or(0);
+        let Ok(items)=self.layout.editor_items() else {self.status="Adjust image placement before tracing.".into();return};
+        let Some(item)=items.get(index) else{return};
+        let pixels=art.tiles.get(index).map(|a|&a.pixels).unwrap_or(&art.pixels);
+        let tile=self.layout.image_tiles.get(index).copied().unwrap_or([0,0,pixels.width(),pixels.height()]);
+        self.vector_trace=Some(crate::vector_trace_ui::Dialog::new(ctx,index,self.source_digest,tile,{let (w,h)=item.orientation.source_size(item.width,item.height);[w,h]},pixels));
+    }
+    fn apply_vector_trace(&mut self,index:usize,asset:mc630_plt_studio::svg_artwork::SvgArtwork) {
+        let before=self.layout.clone();self.layout.svg_sources.insert(index,asset);
+        self.record_layer_edit(ObjectEdit::Layers(Box::new(before)));
+        self.svg_previews.clear();self.outline_cache=Default::default();self.preview_cache=None;
+    }
+    fn vector_trace_dialog(&mut self,ctx:&egui::Context) {
+        let action=self.vector_trace.as_mut().and_then(|dialog|dialog.show(ctx));
+        match action {
+            Some(crate::vector_trace_ui::Action::Close)=>{self.vector_trace=None;},
+            Some(crate::vector_trace_ui::Action::Apply(asset))=>{
+                let dialog=self.vector_trace.as_ref().unwrap();
+                if dialog.source_digest!=self.source_digest || dialog.index>=self.layout.count || self.art.is_none() {
+                    self.vector_trace=None;self.status="Image changed. Open Vector Trace again.".into();return;
+                }
+                let index=dialog.index;
+                self.apply_vector_trace(index,asset);
+                self.vector_trace=None;self.status="Vector trace applied. Original pixels retained. Ctrl+Z to undo.".into();
+            },
+            None=>{}
+        }
+    }
     fn artwork_dialog_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if icon_button(ui, Icon::Import, "Import image (Ctrl+O)") {
@@ -5991,6 +6087,7 @@ impl A4Studio {
         ui.add(egui::Label::new(egui::RichText::new(&self.name).small().weak()).truncate())
             .on_hover_text(&self.name);
 
+        if ui.add_enabled(self.art.is_some(),egui::Button::new("Vector Trace…")).clicked() {self.open_vector_trace(ctx);}
         let previous = self.cut_shape;
         egui::ComboBox::from_id_salt("cut-shape")
             .selected_text(self.cut_shape.label())
@@ -6217,7 +6314,7 @@ impl A4Studio {
             ui.checkbox(&mut self.layout.preserve_corners, "Preserve sharp corners");
             ui.scope(|ui| {
                 ui.spacing_mut().interact_size.y=20.;
-                ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing,0. ..=4.).fixed_decimals(2)));
+                ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing,0. ..=sheet::MAX_SMOOTHING_MM).fixed_decimals(2)));
             });
             crate::ui_theme::preset_buttons(ui, &mut self.layout.smoothing,
                 &[("Off",0.),("Light",0.2),("Medium",0.5),("Strong",4.)]);
@@ -6240,11 +6337,16 @@ impl A4Studio {
             if !self.source.is_empty() { self.retrace(ui.ctx()); }
         }
         ui.separator();
+        let native_svg=self.cut_shape==sheet::CutShape::AlphaOutline && self.layout.editor_items().is_ok_and(|items| {
+            let visible:Vec<_>=(0..items.len()).filter(|i|!self.layout.hidden_images.contains(i)).collect();
+            !visible.is_empty() && visible.iter().all(|i|self.layout.svg_source_for(*i).is_some())
+        });
+        if native_svg {ui.label("SVG vector cutline");ui.small("Original paths · optional smoothing");}
         ui.label("Outline smoothing");
         ui.checkbox(&mut self.layout.preserve_corners, "Preserve sharp corners");
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 20.;
-            ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing, 0.0..=4.0).fixed_decimals(2)));
+            ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing, 0.0..=sheet::MAX_SMOOTHING_MM).fixed_decimals(2)));
         });
         crate::ui_theme::preset_buttons(ui, &mut self.layout.smoothing,
             &[("Off",0.),("Light",0.2),("Medium",0.5),("Strong",4.)]);
@@ -6513,6 +6615,38 @@ mod design_tool_tests {
 mod marquee_tests {
     use super::*;
     #[test]
+    fn blank_drag_selects_design_cutline_and_line_without_an_image() {
+        use crate::shape_ops::Target;
+        let ctx=egui::Context::default();let mut app=A4Studio::fresh_tab();app.show_cut=true;
+        app.layout.design_shapes.push(sheet::DesignShape {path:vec![[20.,20.],[40.,20.],[40.,40.],[20.,40.],[20.,20.]],fill:Some([0,103,192,255]),stroke:[0,0,0,255],stroke_width:0.3,print:true,cut:false});
+        app.layout.manual_cut_paths=vec![vec![[50.,20.],[70.,20.],[70.,40.],[50.,40.],[50.,20.]],vec![[90.,20.],[120.,40.]]];
+        let page=egui::Rect::from_min_size(egui::pos2(20.,20.),egui::vec2(420.,594.));
+        let frame=|app:&mut A4Studio,events,shift| {
+            let _=ctx.run(egui::RawInput {events,modifiers:egui::Modifiers {shift,..Default::default()},..Default::default()},|ctx| {
+                egui::CentralPanel::default().show(ctx,|ui| {
+                    let response=ui.allocate_rect(page,egui::Sense::click_and_drag());
+                    if !app.design_canvas(ui,&response,page,2.,false) {app.canvas_edit(ui,&response,page,2.);}
+                });
+            });
+        };
+        let event=|pos,pressed|egui::Event::PointerButton {pos,pressed,button:egui::PointerButton::Primary,modifiers:Default::default()};
+        frame(&mut app,vec![],false);
+        let start=egui::pos2(30.,30.);let end=egui::pos2(175.,110.);
+        frame(&mut app,vec![egui::Event::PointerMoved(start),event(start,true)],false);
+        frame(&mut app,vec![egui::Event::PointerMoved(end)],false);
+        assert!(app.shape_selection.contains(&Target::Design(0)));assert!(app.shape_selection.contains(&Target::Cut(0)));
+        frame(&mut app,vec![event(end,false)],false);
+        assert_eq!(app.shape_selection.len(),2);assert!(app.marquee.is_none());
+        let start=egui::pos2(190.,50.);let end=egui::pos2(270.,110.);
+        frame(&mut app,vec![egui::Event::PointerMoved(start),event(start,true)],true);
+        frame(&mut app,vec![egui::Event::PointerMoved(end),event(end,false)],true);
+        assert_eq!(app.shape_selection.len(),3);assert!(app.shape_selection.contains(&Target::Cut(1)));
+        app.shape_selection.clear();app.selected_design=Some(0);app.selected_cut_shape=None;
+        frame(&mut app,vec![egui::Event::PointerMoved(start),event(start,true)],true);
+        frame(&mut app,vec![egui::Event::PointerMoved(end),event(end,false)],true);
+        assert_eq!(app.shape_selection.len(),2);assert!(app.shape_selection.contains(&Target::Design(0)));assert!(app.shape_selection.contains(&Target::Cut(1)));
+    }
+    #[test]
     fn blank_drag_selects_intersecting_images_and_preserves_additive_selection() {
         let ctx = egui::Context::default();
         let mut app = A4Studio::default();
@@ -6540,7 +6674,7 @@ mod marquee_tests {
         assert_eq!(app.selection, [0,1].into_iter().collect());
         assert!(app.marquee.is_none());
         assert!(app.drag.is_none());
-        app.marquee=Some((egui::pos2(215.,55.),app.selection.clone()));
+        app.marquee=Some((egui::pos2(215.,55.),app.selection.clone(),vec![]));
         let end=egui::pos2(265.,105.);
         frame(&mut app,vec![egui::Event::PointerMoved(end)]);
         assert_eq!(app.selection,[0,1,2].into_iter().collect());
@@ -6757,5 +6891,228 @@ mod layer_link_tests {
         assert_eq!(app.layout.manual_cut_paths.len(),2);
         assert!(app.layout.image_cut_paths_for(0).unwrap().is_empty());
         app.undo_object(&ctx);assert!(!app.layout.image_cut_paths_for(0).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod retained_svg_tests {
+    use super::*;
+    #[test]
+    fn imported_svg_survives_project_copy_crop_and_duplicate_metadata() {
+        let ctx=egui::Context::default();let mut app=A4Studio::default();
+        let imported=crate::image_import::prepare(br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="18" fill="red"/></svg>"#.to_vec(),"circle.svg".into()).unwrap();
+        app.add_imported_image(imported,false,&ctx);
+        assert!(app.layout.svg_source_for(0).is_some());
+        let project=app.autosave_data().record().project;
+        let restored:crate::project::Project=serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+        let source=restored.source().unwrap();
+        let mut loaded=A4Studio::default();loaded.install_project(restored,source,&ctx);
+        assert!(loaded.layout.svg_source_for(0).is_some());
+        assert!(loaded.preferences().layout.svg_sources.is_empty());
+        let item=loaded.layout.editor_items().unwrap()[0];
+        loaded.duplicate_images(&[(0,item)],(15.,0.),&ctx);
+        assert_eq!(loaded.layout.svg_sources.len(),2);
+        let copied=crate::studio_clipboard::ArtworkCopy {source:loaded.source.clone(),layout:loaded.layout.clone(),indices:vec![1]};
+        let (_,pasted)=copied.compose(&Layout::default(),&[],0.).unwrap();
+        assert!(pasted.svg_source_for(0).is_some());
+        let asset=pasted.svg_source_for(0).unwrap();
+        assert!(asset.raster(asset.raster_rect,600,600,Default::default()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod vector_trace_integration_tests {
+    use super::*;
+    #[test]
+    fn applying_vector_trace_preserves_original_and_undo_redo_and_project_metadata() {
+        let ctx=egui::Context::default();let mut app=A4Studio::fresh_tab();
+        app.source=include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();app.retrace(&ctx);
+        let original=app.source.clone();let pixels=&app.art.as_ref().unwrap().pixels;
+        let asset=mc630_plt_studio::svg_artwork::SvgArtwork::from_bytes(br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><path fill="#0067c0" d="M0 0H40V40H0Z"/></svg>"##,[pixels.width(),pixels.height()]).unwrap();
+        app.apply_vector_trace(0,asset.clone());
+        assert_eq!(app.source,original);assert_eq!(app.layout.svg_sources.get(&0),Some(&asset));
+        let loaded:Layout=serde_json::from_str(&serde_json::to_string(&app.layout).unwrap()).unwrap();
+        assert_eq!(loaded.svg_sources.get(&0),Some(&asset));
+        app.undo_object(&ctx);assert!(app.layout.svg_sources.is_empty());assert_eq!(app.source,original);
+        app.redo_object(&ctx);assert_eq!(app.layout.svg_sources.get(&0),Some(&asset));
+    }
+}
+
+#[cfg(test)]
+mod line_tool_tests {
+    use super::*;
+    #[test]
+    fn line_commits_print_cut_stroke_and_undo_as_an_open_path() {
+        let ctx=egui::Context::default();
+        let line=cut_tools::shape_path(Tool::Line,[20.,30.],[80.,30.],false,0.);
+        for mode in 0..=2 {
+            let mut app=A4Studio::fresh_tab();app.drawing_mode=mode;app.design_stroke_width=0.7;
+            app.activate_cut_tool(Tool::Line);app.commit_manual_cut(line.clone());
+            if mode==0 {assert_eq!(app.layout.manual_cut_paths,vec![line.clone()]);}
+            else {
+                let shape=&app.layout.design_shapes[0];assert_eq!(shape.path,line);assert!(shape.fill.is_none());
+                assert!(shape.print);assert_eq!(shape.cut,mode==2);assert_eq!(shape.stroke_width,0.7);
+                let svg=app.layout.design_svg_paths();assert!(svg.contains("fill=\"none\""));assert!(!svg.contains(" Z"));
+                let restored:Layout=serde_json::from_str(&serde_json::to_string(&app.layout).unwrap()).unwrap();
+                assert_eq!(restored.design_shapes[0].path,line);
+            }
+            if mode!=1 {assert!(app.layout.manual_design_plt().unwrap().contains("PD"));}
+            app.undo_object(&ctx);assert!(app.layout.manual_cut_paths.is_empty());assert!(app.layout.design_shapes.is_empty());
+        }
+        let vertical=vec![[20.,30.],[20.,70.]];
+        let resized=crate::design_transform::transform(&vertical,[0.,20.],Some(2),true,false,[210.,297.]);
+        assert_eq!(cut_tools::bounds(&resized),[20.,30.,20.,90.]);
+    }
+}
+
+#[cfg(test)]
+mod shape_drag_profile {
+    use super::*;
+    #[test]
+    #[ignore = "Manual CPU frame benchmark; MC630_SHAPE_PROFILE selects output"]
+    fn drawing_cpu_frames() {
+        let mut report=Vec::new();
+        for (name,tool) in [("ellipse",Tool::Ellipse),("rectangle",Tool::Rectangle)] {
+            let ctx=egui::Context::default();let mut app=A4Studio::fresh_tab();
+            app.drawing_mode=1;app.cut_corner_radius=3.;
+            for i in 0..40 {
+                app.layout.design_shapes.push(sheet::DesignShape {
+                    path:cut_tools::shape_path(Tool::Ellipse,[20.+(i%5) as f64*30.,20.+(i/5) as f64*25.],[40.+(i%5) as f64*30.,38.+(i/5) as f64*25.],false,0.),
+                    fill:Some([0,103,192,255]),stroke:[0,0,0,255],stroke_width:0.3,print:true,cut:false});
+            }
+            let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1360.,930.));
+            let _=ctx.run(egui::RawInput {screen_rect:Some(screen),..Default::default()},|ctx|app.ui(ctx));
+            app.activate_cut_tool(tool);
+            let page=app.navigator_view.unwrap().0;
+            let start=page.min+egui::vec2(35.,45.);
+            let mut times=Vec::new();let mut counts=Vec::new();
+            for frame in 0..100 {
+                let pos=start+egui::vec2(frame as f32*1.2,frame as f32*1.4);
+                let mut events=vec![egui::Event::PointerMoved(pos)];
+                if frame==0 {events.push(egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()});}
+                let now=std::time::Instant::now();
+                let output=ctx.run(egui::RawInput {screen_rect:Some(screen),time:Some(frame as f64/60.),events,..Default::default()},|ctx|{app.ui(ctx);app.tick_autosave(ctx);});
+                let count=output.shapes.len();
+                let _=ctx.tessellate(output.shapes,output.pixels_per_point);
+                if frame>=20 {times.push(now.elapsed().as_secs_f64()*1000.);counts.push(count);}
+            }
+            times.sort_by(f64::total_cmp);
+            report.push(serde_json::json!({"tool":name,"median_cpu_ms":times[times.len()/2],"p95_cpu_ms":times[times.len()*95/100],"mean_paint_shapes":counts.iter().sum::<usize>() as f64/counts.len() as f64}));
+        }
+        let output=std::env::var("MC630_SHAPE_PROFILE").unwrap_or("target/shape-drag-profile.json".into());
+        std::fs::write(output,serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        println!("{}",serde_json::to_string_pretty(&report).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod shape_drag_autosave_tests {
+    use super::*;
+    #[test]
+    fn shape_drag_defers_snapshot_signature_until_pointer_release() {
+        let ctx=egui::Context::default();let mut app=A4Studio::fresh_tab();
+        app.activate_cut_tool(Tool::Ellipse);app.cut_draft.as_mut().unwrap().drag_start=Some([20.,20.]);
+        app.autosave.observed=None;
+        let event=|pressed|egui::Event::PointerButton {pos:egui::pos2(100.,100.),button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+        let _=ctx.run(egui::RawInput {events:vec![event(true)],..Default::default()},|ctx|app.tick_autosave(ctx));
+        assert!(app.autosave.observed.is_none());
+        let _=ctx.run(egui::RawInput {events:vec![event(false)],..Default::default()},|ctx|app.tick_autosave(ctx));
+        assert_eq!(app.autosave.observed,Some(app.document_signature()));
+    }
+}
+
+#[cfg(test)]
+mod shape_group_transform_tests {
+    use super::*;
+    use crate::shape_ops::Target;
+    fn fixture()->A4Studio {
+        let mut app=A4Studio::fresh_tab();app.rulers=false;
+        app.layout.manual_cut_paths=vec![vec![[20.,20.],[40.,20.],[40.,40.],[20.,40.],[20.,20.]],vec![[60.,20.],[80.,20.],[80.,40.],[60.,40.],[60.,20.]]];
+        app.shape_selection=vec![Target::Cut(0),Target::Cut(1)];app
+    }
+    fn frame(ctx:&egui::Context,app:&mut A4Studio,events:Vec<egui::Event>,modifiers:egui::Modifiers) {
+        let page=egui::Rect::from_min_size(egui::pos2(20.,20.),egui::vec2(420.,594.));
+        let _=ctx.run(egui::RawInput {events,modifiers,..Default::default()},|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui| {
+                let response=ui.allocate_rect(page,egui::Sense::click_and_drag());
+                let owned=app.shape_group_canvas(ui,&response,page,2.,false) || app.design_canvas(ui,&response,page,2.,false);
+                if !owned {app.canvas_edit(ui,&response,page,2.);}
+                app.cut_shape_canvas(&response,ui.painter(),page,page,2.,owned);
+            });
+        });
+    }
+    fn button(pos:egui::Pos2,pressed:bool)->egui::Event {egui::Event::PointerButton {pos,pressed,button:egui::PointerButton::Primary,modifiers:Default::default()}}
+    #[test]
+    fn selected_cutlines_move_together_and_undo_as_one_edit() {
+        let ctx=egui::Context::default();let mut app=fixture();let original=app.layout.manual_cut_paths.clone();
+        frame(&ctx,&mut app,vec![],Default::default());
+        let start=egui::pos2(120.,80.);let end=egui::pos2(140.,110.);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(start),button(start,true)],Default::default());
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(end)],Default::default());
+        frame(&ctx,&mut app,vec![button(end,false)],Default::default());
+        assert_eq!(cut_tools::bounds(&app.layout.manual_cut_paths[0]),[30.,35.,50.,55.]);
+        assert_eq!(cut_tools::bounds(&app.layout.manual_cut_paths[1]),[70.,35.,90.,55.]);
+        assert_eq!(app.shape_selection.len(),2);assert_eq!(app.undo.len(),1);
+        let moved=app.layout.manual_cut_paths.clone();app.undo_object(&ctx);assert_eq!(app.layout.manual_cut_paths,original);
+        app.redo_object(&ctx);assert_eq!(app.layout.manual_cut_paths,moved);
+    }
+    #[test]
+    fn clicking_group_does_not_edit_and_shift_click_can_deselect_a_member() {
+        let ctx=egui::Context::default();let mut app=fixture();let original=app.layout.manual_cut_paths.clone();
+        frame(&ctx,&mut app,vec![],Default::default());
+        let point=egui::pos2(80.,80.);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(point),button(point,true)],Default::default());
+        frame(&ctx,&mut app,vec![button(point,false)],Default::default());
+        assert_eq!(app.shape_selection.len(),2);assert_eq!(app.layout.manual_cut_paths,original);assert!(app.undo.is_empty());
+        let modifiers=egui::Modifiers {shift:true,..Default::default()};
+        frame(&ctx,&mut app,vec![button(point,true)],modifiers);
+        frame(&ctx,&mut app,vec![button(point,false)],modifiers);
+        assert_eq!(app.shape_selection.len(),1);assert!(app.shape_selection.contains(&Target::Cut(1)));assert!(app.undo.is_empty());
+        app.shape_selection=vec![Target::Cut(0),Target::Cut(1)];app.transform_shape_group(0.,false,false);
+        assert!(app.undo.is_empty());
+    }
+    #[test]
+    fn side_handle_shift_alt_resizes_about_the_shared_center() {
+        let ctx=egui::Context::default();let mut app=fixture();
+        frame(&ctx,&mut app,vec![],Default::default());
+        let modifiers=egui::Modifiers {shift:true,alt:true,..Default::default()};
+        let start=egui::pos2(180.,80.);let end=egui::pos2(200.,80.);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(start),button(start,true)],modifiers);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(end),button(end,false)],modifiers);
+        let (_,_,points)=app.selected_shape_points();let [x0,y0,x1,y1]=cut_tools::bounds(&points);
+        assert!(((x0+x1)/2.-50.).abs()<1e-8);assert!(((y0+y1)/2.-30.).abs()<1e-8);
+        assert!((x1-x0-80.).abs()<1e-8);assert!(((x1-x0)/(y1-y0)-3.).abs()<1e-8);
+        assert_eq!(app.undo.len(),1);
+    }
+    #[test]
+    fn mixed_selection_resizes_with_shared_anchor_and_escape_restores_it() {
+        let ctx=egui::Context::default();let mut app=fixture();
+        app.layout.design_shapes.push(sheet::DesignShape {path:app.layout.manual_cut_paths.remove(0),fill:Some([10,20,200,128]),stroke:[0,0,0,255],stroke_width:0.4,print:true,cut:true});
+        app.shape_selection=vec![Target::Design(0),Target::Cut(0)];
+        let before_design=app.layout.design_shapes.clone();let before_cut=app.layout.manual_cut_paths.clone();
+        frame(&ctx,&mut app,vec![],Default::default());
+        let start=egui::pos2(180.,100.);let end=egui::pos2(220.,120.);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(start),button(start,true),egui::Event::PointerMoved(end),button(end,false)],Default::default());
+        let (_,_,points)=app.selected_shape_points();assert_eq!(cut_tools::bounds(&points),[20.,20.,100.,50.]);
+        assert_eq!(app.layout.design_shapes[0].fill,before_design[0].fill);assert_eq!(app.layout.design_shapes[0].stroke_width,0.4);
+        assert_eq!(app.undo.len(),1);
+        let resized=app.layout.manual_cut_paths.clone();
+        let start=egui::pos2(150.,90.);let end=egui::pos2(170.,120.);
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(start),button(start,true)],Default::default());
+        frame(&ctx,&mut app,vec![egui::Event::PointerMoved(end)],Default::default());
+        frame(&ctx,&mut app,vec![egui::Event::Key {key:egui::Key::Escape,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}],Default::default());
+        assert_eq!(app.layout.manual_cut_paths,resized);assert_eq!(app.undo.len(),1);
+        app.undo_object(&ctx);assert!(app.layout.design_shapes==before_design);assert_eq!(app.layout.manual_cut_paths,before_cut);
+    }
+    #[test]
+    fn group_rotation_and_flip_use_shared_center_and_keep_styles() {
+        let ctx=egui::Context::default();let mut app=fixture();let original=app.layout.manual_cut_paths.clone();
+        app.transform_shape_group(0.,true,false);
+        assert_eq!(cut_tools::bounds(&app.layout.manual_cut_paths[0]),[60.,20.,80.,40.]);
+        assert_eq!(cut_tools::bounds(&app.layout.manual_cut_paths[1]),[20.,20.,40.,40.]);
+        app.undo_object(&ctx);assert_eq!(app.layout.manual_cut_paths,original);
+        app.shape_selection=vec![Target::Cut(0),Target::Cut(1)];app.transform_shape_group(90.,false,false);
+        let (_,_,points)=app.selected_shape_points();let bounds=cut_tools::bounds(&points);
+        for (actual,expected) in bounds.into_iter().zip([40.,0.,60.,60.]) {assert!((actual-expected).abs()<1e-8);}
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mc630-plt-studio"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 
 [dependencies]
@@ -21,6 +21,7 @@ semver = "1"
 sha2 = "0.10"
 geo = { version = "0.33.1", default-features = false }
 rstar = "0.12"
+vtracer = "0.6.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

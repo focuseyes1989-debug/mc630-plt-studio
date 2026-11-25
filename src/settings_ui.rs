@@ -12,7 +12,7 @@ impl A4Studio {
         layout.image_groups.clear();
         layout.guides = Default::default();
         layout.manual_cut_paths.clear();
-        layout.design_shapes.clear();
+        layout.design_shapes.clear();layout.svg_sources.clear();
         layout.image_cut_paths.clear();
         layout.use_manual_cut_paths = false;
         if !layout.image_tiles.is_empty() {
@@ -188,7 +188,7 @@ egui::ComboBox::from_id_salt("settings-shape").selected_text(self.cut_shape.labe
                     retrace|=ui.checkbox(&mut self.print_without_background,"Print without background").changed();
 }
 5 => {
-ui.horizontal(|ui|{ui.label("Outline smoothing");ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing,0.0..=4.0)));});
+ui.horizontal(|ui|{ui.label("Outline smoothing");ui.add(crate::ui_theme::small_slider(self.unit.slider(&mut self.layout.smoothing,0.0..=mc630_plt_studio::sheet::MAX_SMOOTHING_MM)));});
                     ui.horizontal(|ui|{ui.label("Outline distance");ui.add(self.unit.distance(&mut self.layout.contour_offset).range(-5.0..=5.0));});
                     ui.checkbox(&mut self.layout.cut_inner_holes,"Cut inner holes");ui.checkbox(&mut self.show_cut,"Show cut outlines");
 }

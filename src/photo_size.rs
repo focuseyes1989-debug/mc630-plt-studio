@@ -52,6 +52,7 @@ pub struct ImageGroup {
     pub size: [f64; 2],
     pub tiles: Vec<[u32; 4]>,
     pub placements: Vec<mc630_plt_studio::sheet::Placement>,
+    pub svg_sources: std::collections::BTreeMap<usize,mc630_plt_studio::svg_artwork::SvgArtwork>,
 }
 
 pub fn append_image(
@@ -61,7 +62,10 @@ pub fn append_image(
     inset: f64,
 ) -> Result<(Vec<u8>, mc630_plt_studio::sheet::Layout), String> {
     let image = crate::image_import::read_file(path)?;
-    append_image_bytes(layout, source, &image.bytes, inset)
+    append_image_bytes(layout, source, &image.bytes, inset).map(|(source,mut next)| {
+        if let Some(mut svg)=image.svg {svg.raster_rect=next.image_tiles[next.count-1];next.svg_sources.insert(next.count-1,svg);}
+        (source,next)
+    })
 }
 
 pub fn append_image_bytes(
@@ -187,7 +191,8 @@ pub fn image_group(
     let mut decoded_bytes = 0;
     for path in paths {
         let result = (|| -> Result<_, String> {
-            let bytes = crate::image_import::read_file(path)?.bytes;
+            let imported=crate::image_import::read_file(path)?;
+            let bytes=imported.bytes;
             let [dx, dy] = dpi(&bytes).unwrap_or([300.; 2]);
             let pixels = decode_rgba(&bytes)?;
             decoded_bytes += pixels.as_raw().len();
@@ -200,7 +205,7 @@ pub fn image_group(
                 f64::from(pixels.width()) * 25.4 / dx,
                 f64::from(pixels.height()) * 25.4 / dy,
             ];
-            Ok((pixels, size))
+            Ok((pixels, size,imported.svg))
         })();
         sources.push(result.map_err(|e| format!("{}: {e}", path.display()))?);
     }
@@ -212,16 +217,16 @@ pub fn image_group(
         let mut scale = 1_f64;
         let mut sum_heights = 0.;
         for row in rows {
-            let width = row.iter().map(|(_, s)| s[0]).sum::<f64>();
+            let width = row.iter().map(|(_, s,_)| s[0]).sum::<f64>();
             scale = scale.min((available[0] - GAP * (row.len() - 1) as f64) / width);
-            sum_heights += row.iter().map(|(_, s)| s[1]).fold(0., f64::max);
+            sum_heights += row.iter().map(|(_, s,_)| s[1]).fold(0., f64::max);
         }
         scale = scale.min((available[1] - gaps_y) / sum_heights);
         if scale > best.0 {
             let width = sources
                 .chunks(cols)
                 .map(|row| {
-                    row.iter().map(|(_, s)| s[0] * scale).sum::<f64>()
+                    row.iter().map(|(_, s,_)| s[0] * scale).sum::<f64>()
                         + GAP * (row.len() - 1) as f64
                 })
                 .fold(0., f64::max);
@@ -232,7 +237,7 @@ pub fn image_group(
     if cols == 0
         || sources
             .iter()
-            .any(|(_, s)| s.iter().any(|v| v * scale < 1.))
+            .any(|(_, s,_)| s.iter().any(|v| v * scale < 1.))
     {
         return Err("Images cannot fit on one page at a usable size.".into());
     }
@@ -241,11 +246,12 @@ pub fn image_group(
     let mut canvas = RgbaImage::new(px(size[0]).max(1), px(size[1]).max(1));
     let mut tiles = Vec::new();
     let mut placements = Vec::new();
+    let mut svg_sources=std::collections::BTreeMap::new();
     let mut y = 0.;
     for row in sources.chunks(cols) {
         let mut x = 0.;
         let mut row_height = 0_f64;
-        for (image, [w, h]) in row {
+        for (image, [w, h],svg) in row {
             let (w, h) = (w * scale, h * scale);
             let rect = [
                 px(x),
@@ -255,6 +261,7 @@ pub fn image_group(
             ];
             let image = imageops::resize(image, rect[2], rect[3], imageops::FilterType::Lanczos3);
             imageops::replace(&mut canvas, &image, px(x).into(), px(y).into());
+            if let Some(mut svg)=svg.clone() {svg.raster_rect=rect;svg_sources.insert(tiles.len(),svg);}
             tiles.push(rect);
             placements.push(mc630_plt_studio::sheet::Placement {
                 x,
@@ -281,6 +288,7 @@ pub fn image_group(
         size,
         tiles,
         placements,
+        svg_sources,
     })
 }
 
@@ -330,6 +338,7 @@ mod tests {
             size: [width, height],
             tiles,
             placements,
+            svg_sources:_,
         } = result.unwrap();
         let mut layout = Layout {
             count: 2,

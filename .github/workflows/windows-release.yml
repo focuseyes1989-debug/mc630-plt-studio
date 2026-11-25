@@ -40,8 +40,8 @@ jobs:
         run: |
           $notes = "RELEASE-NOTES-$env:GITHUB_REF_NAME.md"
           if (Test-Path -LiteralPath $notes) {
-            gh release create $env:GITHUB_REF_NAME dist/MC630-PLT-Studio.exe dist/SHA256SUMS.txt --verify-tag --notes-file $notes --latest
+            gh release create $env:GITHUB_REF_NAME dist/MC630-PLT-Studio.exe dist/SHA256SUMS.txt THIRD-PARTY-NOTICES.txt --verify-tag --notes-file $notes --latest
           } else {
-            gh release create $env:GITHUB_REF_NAME dist/MC630-PLT-Studio.exe dist/SHA256SUMS.txt --verify-tag --generate-notes --latest
+            gh release create $env:GITHUB_REF_NAME dist/MC630-PLT-Studio.exe dist/SHA256SUMS.txt THIRD-PARTY-NOTICES.txt --verify-tag --generate-notes --latest
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

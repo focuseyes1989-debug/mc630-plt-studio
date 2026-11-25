@@ -74,7 +74,8 @@ impl ArtworkCopy {
             if source.is_empty() {
                 let [left,right,top,bottom]=layout.margins().map(|v|v.max(inset));
                 if item.width>layout.page_width-left-right || item.height>layout.page_height-top-bottom {return Err("Copied image does not fit this page.".into());}
-                layout.count=1;layout.custom.clear();layout.image_tiles.clear();layout.image_groups.clear();layout.hidden_images.clear();layout.image_cut_paths.clear();
+                layout.svg_sources.clear();
+                layout.count=1;layout.custom.clear();layout.image_tiles.clear();layout.image_groups.clear();layout.hidden_images.clear();layout.image_opacity.clear();layout.image_cut_paths.clear();
                 layout.width=item.width;layout.height=item.height;
                 layout.custom.insert(0,mc630_plt_studio::sheet::Placement{x:left,y:top,..item});
                 source=png.into_inner();new=0;
@@ -82,6 +83,12 @@ impl ArtworkCopy {
                 let (next,next_layout)=crate::photo_size::append_image_sized(&layout,&source,&png.into_inner(),inset,Some([item.width,item.height]))?;
                 source=next;layout=next_layout;new=layout.count-1;
                 layout.custom.get_mut(&new).unwrap().orientation=item.orientation;
+            }
+            layout.image_opacity.insert(new,self.layout.opacity_for(old));
+            if let Some(asset)=self.layout.svg_source_for(old) {
+                let mut asset=asset.cropped([x,y,w,h])?;
+                asset.raster_rect=layout.image_tiles.get(new).copied().unwrap_or([0,0,w,h]);
+                layout.svg_sources.insert(new,asset);
             }
             if let Some(paths)=self.layout.image_cut_paths_for(old) {
                 layout.image_cut_paths.insert(new,paths.clone());
@@ -102,9 +109,10 @@ mod tests {
         layout.custom.insert(0,item);
         layout.link_cut_paths(0,vec![vec![[20.,25.],[45.,25.],[45.,45.],[20.,45.],[20.,25.]]]).unwrap();
         let bytes=include_bytes!("../examples/A4-DEMO/sample-sticker.png").to_vec();
+        layout.image_opacity.insert(0,128);
         let copied=ArtworkCopy{source:bytes.clone(),layout:layout.clone(),indices:vec![0]};
         let (source,pasted)=copied.compose(&layout,&bytes,0.).unwrap();
-        assert_eq!(pasted.count,2);
+        assert_eq!(pasted.count,2);assert_eq!(pasted.opacity_for(1),128);
         assert_eq!(pasted.image_cut_paths[&1],layout.image_cut_paths[&0]);
         assert_eq!(pasted.custom[&1].orientation,item.orientation);
         assert_eq!((pasted.custom[&1].width,pasted.custom[&1].height),(item.width,item.height));
