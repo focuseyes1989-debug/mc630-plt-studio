@@ -78,7 +78,7 @@ impl Preview {
     pub fn has_base(&self)->bool {self.base.is_some()}
     pub fn paint(&mut self,ctx:&egui::Context,painter:&egui::Painter,page:egui::Rect,layout:&Layout)->Result<(),String> {
         let dimensions=[layout.page_width,layout.page_height];
-        let svg_changed=if layout.svg_sources.is_empty() {self.svg_layout.is_some()}else{self.svg_layout.as_ref().is_none_or(|old|old.svg_sources!=layout.svg_sources || old.custom!=layout.custom || old.image_tiles!=layout.image_tiles || old.hidden_images!=layout.hidden_images || old.count!=layout.count || old.width!=layout.width || old.height!=layout.height)};
+        let svg_changed=if layout.svg_sources.is_empty() {self.svg_layout.is_some()}else{self.svg_layout.as_ref().is_none_or(|old|old.svg_sources!=layout.svg_sources || old.custom!=layout.custom || old.image_tiles!=layout.image_tiles || old.hidden_images!=layout.hidden_images || old.image_opacity!=layout.image_opacity || old.count!=layout.count || old.width!=layout.width || old.height!=layout.height)};
         if self.page_size!=dimensions || self.shapes!=layout.design_shapes || svg_changed {
             self.svg_layout=(!layout.svg_sources.is_empty()).then(||layout.clone());
             self.shapes.clone_from(&layout.design_shapes);
@@ -186,6 +186,22 @@ fn display_region(cache:&Cached,layout:&Layout)->[f64;4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn svg_opacity_change_invalidates_the_visible_preview_generation() {
+        let ctx=egui::Context::default();let mut preview=Preview::default();
+        let mut layout=Layout {count:1,..Default::default()};
+        let asset=mc630_plt_studio::svg_artwork::SvgArtwork::from_bytes(br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path fill="#0067c0" d="M0 0H20V20H0Z"/></svg>"##,[20,20]).unwrap();
+        layout.svg_sources.insert(0,asset);
+        let frame=|preview:&mut Preview,layout:&Layout| {
+            let _=ctx.run(egui::RawInput::default(),|ctx| {
+                egui::CentralPanel::default().show(ctx,|ui|preview.paint(ctx,ui.painter(),egui::Rect::from_min_size(egui::pos2(10.,10.),egui::vec2(420.,594.)),layout).unwrap());
+            });
+        };
+        frame(&mut preview,&layout);let generation=preview.generation;
+        layout.image_opacity.insert(0,128);frame(&mut preview,&layout);
+        assert!(preview.generation>generation);
+        assert_eq!(preview.svg_layout.as_ref().unwrap().opacity_for(0),128);
+    }
     #[test]
     fn simple_shapes_render_immediately_and_reuse_mesh_until_geometry_changes() {
         let ctx=egui::Context::default();let mut preview=Preview::default();let mut layout=Layout::default();

@@ -22,6 +22,7 @@
 ## Layers and compact UI
 - Show attached Auto/Manual cutline entries beneath image layers, with access to cutline settings.
 - Add image opacity from 0–100%, preserved through projects, copies and print output without changing cut geometry.
+- Refresh cached SVG artwork previews when image opacity changes.
 - Match the opacity slider handle to the other compact sliders.
 - Remove the bottom Control bar and compact the Page size dialog with aligned inputs, the selected paper preset and an inline width/height swap button.
 
@@ -30,6 +31,6 @@
 - Native SVG cutlines support plain vector paths. SVG masks, filters, clip paths, patterns and embedded raster content require conversion to supported paths or manual cutlines.
 - Large raster clipboard paste still rebuilds the image atlas. This release does not claim to resolve that existing bottleneck.
 
-Validation: 206 automated tests passed; 8 manual/device/performance diagnostics remain ignored.
+Validation: 207 automated tests passed; 8 manual/device/performance diagnostics remain ignored.
 
 Download MC630-PLT-Studio.exe, verify it with SHA256SUMS.txt, and retain THIRD-PARTY-NOTICES.txt. Existing installations can use Studio updates.
