@@ -20,6 +20,7 @@ mod studio_clipboard;
 mod preferences;
 mod project;
 mod project_io;
+mod print_range;
 mod recent;
 mod recent_gallery;
 mod pen_cursor;

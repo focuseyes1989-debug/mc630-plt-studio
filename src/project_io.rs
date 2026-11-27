@@ -22,6 +22,7 @@ pub struct Loaded {
 pub enum Completed {
     Saved,
     Opened(Loaded),
+    PageOpened(Loaded),
 }
 pub struct Job {
     pub path: PathBuf,
@@ -66,6 +67,15 @@ impl Job {
     pub fn open(path: PathBuf) -> Self {
         Self::start(path, false, |path, progress| {
             let project = Project::read(path)?;
+            Self::prepare(project, progress).map(Completed::Opened)
+        })
+    }
+    pub fn page(project: Project) -> Self {
+        Self::start(PathBuf::from("Page"), false, move |_, progress| {
+            Self::prepare(project, progress).map(Completed::PageOpened)
+        })
+    }
+    fn prepare(project: Project, progress: &AtomicU8) -> Result<Loaded, String> {
             progress.store(25, Ordering::Relaxed);
             let source = project.source_untraced()?;
             progress.store(50, Ordering::Relaxed);
@@ -91,14 +101,13 @@ impl Job {
             });
             let back_previews = project.back.prepare_previews()?;
             progress.store(95, Ordering::Relaxed);
-            Ok(Completed::Opened(Loaded {
+            Ok(Loaded {
                 project,
                 source,
                 art,
                 preview,
                 back_previews,
-            }))
-        })
+            })
     }
     pub fn stage(&self) -> (f32, &'static str) {
         let p = self.progress.load(Ordering::Relaxed);

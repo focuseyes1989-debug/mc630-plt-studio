@@ -170,6 +170,7 @@ impl CanvasDrag {
     }
 }
 enum ObjectEdit {
+    Nudge(std::collections::BTreeMap<usize,sheet::Placement>,Vec<sheet::DesignShape>,Vec<Vec<mc630_plt_studio::Point>>),
     Shaping(Vec<sheet::DesignShape>,Vec<Vec<mc630_plt_studio::Point>>),
     Designs(Vec<sheet::DesignShape>),
     PageGeometry(Box<Layout>),
@@ -244,6 +245,13 @@ struct WebImageImport {
 }
 
 pub struct A4Studio {
+    other_pages: Vec<crate::project::Project>,
+    page_signatures: Vec<u64>,
+    page_histories: Vec<PageHistory>,
+    active_page: usize,
+    pending_page: Option<usize>,
+    delete_page_open: bool,
+    delete_page_after_switch: bool,
     web_import: Option<WebImageImport>,
     vector_trace:Option<crate::vector_trace_ui::Dialog>,
     io_job: Option<crate::project_io::Job>,
@@ -255,6 +263,8 @@ pub struct A4Studio {
     back_paths_cache: Option<(Layout, u64, std::sync::Arc<Vec<Vec<[f64;2]>>>)>,
     show_back: bool,
     print_back: bool,
+    print_range_mode:u8,
+    print_range:String,
     pub workspace_enabled: bool,
     pub workspace_action: Option<WorkspaceAction>,
     pub tab_closed: bool,
@@ -382,7 +392,7 @@ struct PageSizeEditor {
 impl Default for A4Studio {
     fn default() -> Self {
         #[allow(unused_mut)]
-        let mut app=Self{vector_trace:None,web_import:None,io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),recent_gallery:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,show_navigator:true,navigator_view:None,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_manual_marks:false,overflow_warning_seen:false,overflow_warning_open:false,crop_edit:None,cut_draft:None,cut_corner_radius:0.,drawing_mode:0,design_fill:egui::Color32::from_rgb(0,103,192),design_fill_enabled:true,design_stroke:egui::Color32::BLACK,design_stroke_width:0.3,selected_design:None,shape_selection:vec![],shape_group_drag:None,shape_angle:0.,design_drag:None,design_preview:Default::default(),svg_previews:Default::default(),pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,camera:Default::default(),rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_margins_linked:true,margins_linked:false,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),marquee:None,selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
+        let mut app=Self{other_pages:Vec::new(),page_signatures:Vec::new(),page_histories:Vec::new(),active_page:0,pending_page:None,delete_page_open:false,delete_page_after_switch:false,vector_trace:None,web_import:None,io_job:None,io_after_save:None,io_workspace_result:None,io_workspace_waiting:false,io_close_requested:false,back_paths_cache:None,back:Default::default(),show_back:false,print_back:false,print_range_mode:0,print_range:String::new(),workspace_enabled:false,workspace_action:None,tab_closed:false,close_canceled:false,reopen_last_project:false,startup_pending:true,startup_project:None,recent_projects:Default::default(),recent_gallery:Default::default(),autosave:Default::default(),autosave_enabled:true,autosave_seconds:15,saved_signature:0,source_digest:0,pending_action:None,close_approved:false,unit:Unit::Inches,show_settings:false,show_properties:false,show_navigator:true,navigator_view:None,palette_geometry:None,section_palettes:Default::default(),show_margin_guides:true,nudge_fine:0.1,nudge_coarse:1.,preview_cache:None,outline_cache:Default::default(),capacity_cache:None,art:None,texture:None,source:vec![],name:"No image selected".into(),layout:Layout{offset_x:-7.,offset_y:-7.,..Layout::default()},remove_white:false,cut_shape:sheet::CutShape::AlphaOutline,background_tolerance:20,print_without_background:true,threshold:245,status:"Choose a transparent PNG. Repeat it on A4 and export matching PRINT.html + CUT.plt.".into(),show_cut:true,show_manual_marks:false,overflow_warning_seen:false,overflow_warning_open:false,crop_edit:None,cut_draft:None,cut_corner_radius:0.,drawing_mode:0,design_fill:egui::Color32::from_rgb(0,103,192),design_fill_enabled:true,design_stroke:egui::Color32::BLACK,design_stroke_width:0.3,selected_design:None,shape_selection:vec![],shape_group_drag:None,shape_angle:0.,design_drag:None,design_preview:Default::default(),svg_previews:Default::default(),pick_cut_shapes:false,selected_cut_shape:None,cut_shape_drag:None,show_print_dialog:false,zoom:1.,canvas_pan:egui::Vec2::ZERO,camera:Default::default(),rulers:true,guide_drag:None,selected_guide:None,snap_guides:true,grid:false,show_guide:false,show_new:false,page_size_editor:None,new_preset:0,new_width:210.,new_height:297.,new_margins:[15.;4],new_margins_linked:true,margins_linked:false,new_landscape:false,contour_color:egui::Color32::RED,selected:None,selection:Default::default(),marquee:None,selection_anchor:None,drag:None,duplicate_step:None,undo:vec![],redo:vec![],ratio:1.,lock:true,last_print:None,project_path:None,preview_mark_origin:true,ccd_trial:false,ccd_profile:sheet::CcdTrial::default(),#[cfg(windows)] print_panel:crate::native_print::PrintPanel::default()};
         #[cfg(not(test))]
         if let Ok(p) = Preferences::load() {
             app.apply_preferences(p);
@@ -1277,6 +1287,7 @@ impl A4Studio {
             self.show_new = false;
         }
         if create {
+            self.other_pages.clear();self.page_signatures.clear();self.page_histories.clear();self.active_page=0;
             self.svg_previews.clear();
             self.back = Default::default();
             self.show_back = false;
@@ -1445,6 +1456,12 @@ impl A4Studio {
     fn swap_object_edit(&mut self, edit: ObjectEdit, ctx: &egui::Context) -> ObjectEdit {
         self.drag = None;self.design_drag=None;self.shape_group_drag=None;self.shape_selection.clear();
         match edit {
+            ObjectEdit::Nudge(positions,designs,cuts)=>{
+                self.preview_cache=None;self.back_paths_cache=None;
+                ObjectEdit::Nudge(std::mem::replace(&mut self.layout.custom,positions),
+                    std::mem::replace(&mut self.layout.design_shapes,designs),
+                    std::mem::replace(&mut self.layout.manual_cut_paths,cuts))
+            }
             ObjectEdit::Shaping(shapes,paths)=> {
                 self.selected_design=None;self.selected_cut_shape=None;self.cut_shape_drag=None;self.preview_cache=None;
                 ObjectEdit::Shaping(std::mem::replace(&mut self.layout.design_shapes,shapes),std::mem::replace(&mut self.layout.manual_cut_paths,paths))
@@ -2239,6 +2256,44 @@ impl A4Studio {
             );
         }
         self.record_object_edit(before);
+    }
+    fn nudge_step(&self,mods:egui::Modifiers)->f64 {
+        let step=if mods.shift {self.nudge_coarse}else{self.nudge_fine};
+        step*if mods.ctrl{10.}else{1.}*if mods.alt{0.1}else{1.}
+    }
+    fn nudge_canvas_selection(&mut self,dx:f64,dy:f64) {
+        use crate::shape_ops::Target;
+        if self.drag.is_some() || self.design_drag.is_some() || self.cut_shape_drag.is_some()
+            || self.shape_group_drag.is_some() || self.cut_draft.is_some() || self.crop_edit.is_some()
+            || self.guide_drag.is_some() || !dx.is_finite() || !dy.is_finite(){return;}
+        let mut targets=self.shape_selection.clone();
+        if let Some(active)=self.selected_design.map(Target::Design).or_else(||self.selected_cut_shape.map(Target::Cut))
+            && !targets.contains(&active) {targets=vec![active];}
+        targets.sort_by_key(|t|match t {Target::Design(i)=>(0,*i),Target::Cut(i)=>(1,*i)});
+        targets.dedup();
+        let mut lengths=vec![];let mut points=vec![];
+        targets.retain(|target|{
+            let path=match target {Target::Design(i)=>self.layout.design_shapes.get(*i).map(|s|&s.path),Target::Cut(i)=>self.layout.manual_cut_paths.get(*i)};
+            if let Some(path)=path.filter(|p|!p.is_empty()) {lengths.push(path.len());points.extend_from_slice(path);true}else{false}
+        });
+        if targets.is_empty(){self.nudge_selection(dx,dy);return;}
+        let items=self.layout.editor_items().unwrap_or_default();
+        let members:Vec<_>=self.selection.iter().filter(|i|self.movable_image(**i))
+            .filter_map(|i|items.get(*i).map(|p|(*i,*p))).collect();
+        let [x0,y0,x1,y1]=cut_tools::bounds(&points);
+        let mut bounds=members.clone();
+        bounds.push((usize::MAX,sheet::Placement{x:x0,y:y0,width:(x1-x0).max(0.),height:(y1-y0).max(0.),orientation:Default::default()}));
+        let (dx,dy)=group_move_delta(&bounds,dx,dy,if members.is_empty(){0.}else{self.edit_inset()},[self.layout.page_width,self.layout.page_height]);
+        if dx.abs()<1e-10 && dy.abs()<1e-10{return;}
+        let before=if members.is_empty(){ObjectEdit::Shaping(self.layout.design_shapes.clone(),self.layout.manual_cut_paths.clone())}
+            else {ObjectEdit::Nudge(self.layout.custom.clone(),self.layout.design_shapes.clone(),self.layout.manual_cut_paths.clone())};
+        if !members.is_empty(){
+            for (i,p) in items.into_iter().enumerate(){self.layout.custom.insert(i,p);}
+            for (i,p) in members {self.layout.custom.insert(i,sheet::Placement{x:p.x+dx,y:p.y+dy,..p});}
+        }
+        for point in &mut points {point[0]+=dx;point[1]+=dy;}
+        self.set_shape_group_points(&targets,&lengths,&points);
+        self.record_layer_edit(before);
     }
     fn document_stepper(ui: &mut egui::Ui, unit: Unit, value: &mut f64, min: f64) -> bool {
         let before = *value;
@@ -3678,6 +3733,10 @@ impl A4Studio {
         }
     }
     pub fn ui(&mut self, ctx: &egui::Context) {
+        // Bottom panels reserve space from the outside in.
+        self.document_status_bar(ctx);
+        self.pages_bar(ctx);
+        if self.io_job.is_some() {self.project_io_progress(ctx);return;}
         #[cfg(windows)]
         self.print_panel.poll_job(ctx, &mut self.status);
         if self.show_back {
@@ -3793,25 +3852,15 @@ impl A4Studio {
             }
             if !self.show_new
                 && !self.show_settings
-                && !self.selection.is_empty()
+                && (!self.selection.is_empty() || !self.shape_selection.is_empty() || self.selected_design.is_some() || self.selected_cut_shape.is_some())
+                && !ctx.memory(|m|m.any_popup_open() || m.top_modal_layer().is_some())
                 && self.drag.is_none()
                 && !self.camera.is_panning()
             {
                 let delta = ctx.input_mut(|i| {
                     let mods = i.modifiers;
-                    if mods.ctrl || mods.alt || mods.command {
-                        return [0., 0.];
-                    }
-                    let keymods = if mods.shift {
-                        egui::Modifiers::SHIFT
-                    } else {
-                        egui::Modifiers::NONE
-                    };
-                    let step = if mods.shift {
-                        self.nudge_coarse
-                    } else {
-                        self.nudge_fine
-                    };
+                    let keymods = mods;
+                    let step = self.nudge_step(mods);
                     let mut delta = [0., 0.];
                     for (key, axis, direction) in [
                         (egui::Key::ArrowLeft, 0, -1.),
@@ -3826,7 +3875,7 @@ impl A4Studio {
                     delta
                 });
                 if delta != [0., 0.] {
-                    self.nudge_selection(delta[0], delta[1]);
+                    self.nudge_canvas_selection(delta[0], delta[1]);
                 }
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::A)) {
@@ -3856,18 +3905,6 @@ impl A4Studio {
         }
 
         self.handle_dropped_artwork(ctx);
-
-        egui::TopBottomPanel::bottom("a4-status").show(ctx, |ui| {
-            ui.add_space(1.);
-
-            ui.horizontal(|ui| {
-                ui.small("Status");
-                ui.separator();
-                ui.label(&self.status);
-            });
-
-            ui.add_space(1.);
-        });
 
         if self.show_guide {
             egui::Window::new("Print & Cut workflow").open(&mut self.show_guide).collapsible(false).resizable(false).show(ctx,|ui|{
@@ -5312,6 +5349,10 @@ include!("workspace_ui.rs");
 include!("settings_ui.rs");
 
 include!("project_ui.rs");
+include!("pages_ui.rs");
+#[cfg(test)]
+#[path="nudge_tests.rs"]
+mod nudge_tests;
 
 include!("document_lifecycle.rs");
 
@@ -5993,6 +6034,21 @@ impl A4Studio {
             egui::Grid::new("print-document-form")
                 .num_columns(2).min_col_width(85.).spacing([18., 8.])
                 .show(ui, |ui| {
+                    ui.label("Page");
+                    ui.label(format!("{} of {}",self.active_page+1,self.other_pages.len()+1));
+                    ui.end_row();
+                    ui.label("Print pages");
+                    ui.horizontal(|ui|{
+                        ui.selectable_value(&mut self.print_range_mode,0,"Current");
+                        ui.selectable_value(&mut self.print_range_mode,1,"All");
+                        ui.selectable_value(&mut self.print_range_mode,2,"Range");
+                    });
+                    ui.end_row();
+                    if self.print_range_mode==2 {
+                        ui.label("Page range");
+                        ui.add(egui::TextEdit::singleline(&mut self.print_range).desired_width(210.).hint_text("1, 3, 5-8"));
+                        ui.end_row();
+                    }
                     ui.label("Side");
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.print_back, false, "Main Page");
@@ -6008,24 +6064,17 @@ impl A4Studio {
                     ui.end_row();
                 });
             ui.separator();
+            let selected_pages=self.selected_print_pages();
+            if let Err(error)=&selected_pages {ui.colored_label(egui::Color32::from_rgb(180,45,30),error);}
             #[cfg(windows)]
             {
-                use crate::native_print::PrintArtwork;
-                let has_artwork = if self.print_back {
-                    !self.back.data.images.is_empty()
-                } else {
-                    self.layout.has_print_designs() || (self.art.is_some() && self.layout.has_visible_images())
-                };
-                let artwork = || if self.print_back {
-                    Some(PrintArtwork::Back(self.back.data.clone()))
-                } else {
-                    if self.art.is_none() && self.layout.has_print_designs() {Some(PrintArtwork::Design(self.layout.clone(),self.ccd_trial.then(||self.ccd_profile.clone())))} else {self.art.as_ref().map(|art| PrintArtwork::Front {
-                            art: art.clone(),
-                            layout: self.layout.clone(),
-                            ccd: self.ccd_trial.then(|| self.ccd_profile.clone()),
-                        })}
-                };
-                self.print_panel.ui(ui, &self.layout, &mut self.status, has_artwork, artwork);
+                let ready=selected_pages.is_ok();
+                // Build requests only when Print is clicked. Rasterizing and
+                // decoding inactive pages remains on the print worker.
+                if self.print_panel.ui(ui,ready) {
+                    let pages=selected_pages.and_then(|pages|self.prepare_print_pages(&pages));
+                    self.print_panel.submit(pages,&mut self.status,ctx);
+                }
             }
             #[cfg(not(windows))]
             ui.label("Direct printing is available on Windows.");

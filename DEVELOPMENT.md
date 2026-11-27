@@ -85,3 +85,17 @@ With Select active, drag from blank canvas to select images, Design shapes, stan
 ### Transform selected Design / Cutline objects together
 
 Two or more selected Design shapes or standalone cutlines share one bounding box with eight resize handles. Drag the box to move the set; drag a corner or edge handle to resize all paths around one shared anchor. Shift locks the resize ratio (or movement axis), Alt resizes about the shared center, and Escape restores the gesture's starting geometry. Clicks below the drag threshold do not edit geometry. A completed gesture creates one Undo step for the mixed selection, preserving each shape's fill, stroke and Print/Cut flags. Tool Options provides shared Rotate 90, Flip H/V and Rotate by degrees + Apply controls. The selected objects remain separate layers.
+
+### Multiple pages in one document
+
+The Pages bar sits immediately above Status and provides Previous/Next, a page selector, Add blank page, Duplicate page and Delete page. New pages are inserted after the active page and inherit its paper size and margins. Each page keeps independent Main/Back artwork, image transforms, designs, manual/automatic cutlines, layout settings and in-session Undo/Redo history. Delete requires confirmation and the last page is retained. HTML and PLT export operate on the selected page. Print offers Current, All and manual Range (for example `1, 3, 5-8`), applies the chosen Main/Back side to every requested page, and submits one multi-page job. Ranges preserve entered order and remove duplicates; invalid or unavailable page numbers disable Print. All selected paper sizes must match the printer preferences and are checked before StartDoc. The worker decodes and rasterizes one page at a time.
+
+Page preparation runs through the existing serialized project worker and progress dialog. Inactive pages retain project source data without GPU textures. A failed page load leaves the active page intact. Navigation is excluded from dirty tracking. Save/Open and autosave recovery include all pages and the selected page index. Existing single-page projects open as Page 1. Multi-page files use format version 2 so older Studio versions reject them instead of overwriting only one page; single-page saves continue using version 1. Documents allow up to 100 pages and 256 MB total serialized project/recovery data, with the existing per-image limits retained.
+
+Print preparation displays a determinate progress bar instead of a spinner, with printer/paper checks, preparing/sending each selected page, and final job submission. Progress advances from worker milestones, reaching 100% only after EndDoc succeeds. Submission means the job reached the Windows printer queue; it does not report physical printer completion.
+
+Regression coverage includes independent Main/Back/design data, page navigation and clean state, per-page Undo history, duplicate/delete ordering, save/open/recovery and malformed-page failure handling.
+
+### Arrow-key movement
+
+Selected Design shapes and standalone Cutline paths support all four arrow keys, including mixed selections with images. Arrow uses the fine nudge setting (default 0.1 mm), Shift uses coarse (1 mm), Ctrl multiplies by 10, and Alt divides by 10; modifiers combine. Movement is independent of zoom, preserves styles and relative positions, stays within page/CCD bounds and creates one Undo entry per nudge. Text editors, open popups/modals and active drawing/transform gestures keep their keyboard input. Moving an image continues to move its linked image-local cutline.

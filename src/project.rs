@@ -3,8 +3,9 @@ use base64::Engine as _;
 use std::{io::Write, path::Path};
 const FORMAT: &str = "MC630 Print and Cut Project";
 const VERSION: u32 = 1;
-const MAX_FILE: u64 = 64_000_000;
-#[derive(serde::Serialize, serde::Deserialize)]
+pub const MAX_FILE: u64 = 256_000_000;
+pub const MAX_PAGES: usize = 100;
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Project {
     format: String,
     version: u32,
@@ -15,8 +16,19 @@ pub struct Project {
     pub aspect_ratio: f64,
     #[serde(default)]
     pub back: crate::duplex::BackDocument,
+    /// The root contains the active page; these are the remaining pages in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_pages: Vec<Project>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub active_page: usize,
 }
+fn is_zero(value: &usize) -> bool { *value == 0 }
 impl Project {
+    pub fn set_pages(&mut self, pages: Vec<Project>, active: usize) {
+        self.version = if pages.is_empty() { VERSION } else { 2 };
+        self.other_pages = pages;
+        self.active_page = active;
+    }
     pub fn new(
         artwork_name: String,
         source: &[u8],
@@ -32,6 +44,8 @@ impl Project {
             canvas_pan,
             aspect_ratio: 1.,
             back: Default::default(),
+            other_pages: Vec::new(),
+            active_page: 0,
         }
     }
     #[cfg(test)]
@@ -43,8 +57,17 @@ impl Project {
     }
     pub fn source_untraced(&self)->Result<Vec<u8>,String>{self.decode_source(false,false)}
     fn decode_source(&self, recovery: bool, trace:bool) -> Result<Vec<u8>, String> {
-        if self.format != FORMAT || self.version != VERSION {
+        if self.format != FORMAT || ![VERSION, 2].contains(&self.version) {
             return Err("Unsupported project format or version.".into());
+        }
+        if self.other_pages.len() >= MAX_PAGES || self.active_page > self.other_pages.len() {
+            return Err("Invalid project page count or active page.".into());
+        }
+        for page in &self.other_pages {
+            if !page.other_pages.is_empty() || page.active_page != 0 {
+                return Err("Nested project pages are not supported.".into());
+            }
+            page.decode_source(recovery, trace)?;
         }
         if trace {self.back.validate([self.settings.layout.page_width, self.settings.layout.page_height])?;}else{self.back.validate_geometry([self.settings.layout.page_width,self.settings.layout.page_height])?;}
         if recovery {
@@ -103,7 +126,7 @@ impl Project {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_FILE {
-            return Err("Project exceeds the 64 MB limit.".into());
+            return Err("Project exceeds the 256 MB limit.".into());
         }
         serde_json::from_slice(&bytes).map_err(|e| format!("Cannot read project: {e}"))
     }
@@ -112,9 +135,11 @@ impl Project {
     pub fn save_progress(&self, path:&Path, progress:impl Fn(u8))->Result<(),String>{
         self.source_untraced()?;
         progress(50);
+        // Older applications must reject multi-page files rather than silently
+        // opening and then overwriting only their active page.
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_FILE {
-            return Err("Project exceeds the 64 MB limit.".into());
+            return Err("Project exceeds the 256 MB limit.".into());
         }
         progress(85);
         write_atomic(path, &bytes)

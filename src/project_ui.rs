@@ -86,6 +86,11 @@ impl A4Studio {
     }
     #[cfg(test)]
     fn project_snapshot(&self) -> crate::project::Project {
+        let mut project=self.page_snapshot();
+        project.set_pages(self.other_pages.clone(), self.active_page);
+        project
+    }
+    fn page_snapshot(&self) -> crate::project::Project {
         let mut settings = self.preferences();
         settings.layout = self.layout.clone();
         let mut project = crate::project::Project::new(
@@ -169,9 +174,14 @@ impl A4Studio {
     ) {
         self.install_project_prepared(project,source,ctx,None,None,false);
     }
-    fn install_project_prepared(&mut self,project:crate::project::Project,source:Vec<u8>,ctx:&egui::Context,art:Option<Artwork>,preview:Option<egui::ColorImage>,prepared:bool) {
+    fn install_project_prepared(&mut self,mut project:crate::project::Project,source:Vec<u8>,ctx:&egui::Context,art:Option<Artwork>,preview:Option<egui::ColorImage>,prepared:bool) {
+        self.other_pages=std::mem::take(&mut project.other_pages);
+        self.active_page=project.active_page;
+        self.page_signatures=self.other_pages.iter().map(Self::stored_page_signature).collect();
+        self.page_histories=(0..self.other_pages.len()).map(|_|PageHistory::default()).collect();
+        self.delete_page_open=false;
         self.back_paths_cache=None;
-        self.selected_design=None;self.shape_selection.clear();self.design_drag=None;self.design_preview=Default::default();self.svg_previews.clear();
+        self.selected_design=None;self.shape_selection.clear();self.shape_group_drag=None;self.marquee=None;self.design_drag=None;self.design_preview=Default::default();self.svg_previews.clear();
         self.back.install(project.back);
         self.show_back = false;
         self.print_back = false;
@@ -241,6 +251,9 @@ impl A4Studio {
             Err(std::sync::mpsc::TryRecvError::Disconnected)=>Err("Project worker stopped unexpectedly.".into()),
         };
         match result {
+            Ok(crate::project_io::Completed::PageOpened(loaded))=>{
+                self.finish_page_switch(loaded,ctx);
+            }
             Ok(crate::project_io::Completed::Saved)=>{
                 self.project_path=Some(job.path.clone());self.mark_saved();
                 self.status=format!("Project saved: {}",job.path.display());self.remember_recent(&job.path);
@@ -254,7 +267,9 @@ impl A4Studio {
                 self.status=format!("Project opened: {}",job.path.display());self.remember_recent(&job.path);
             }
             Err(error)=>{
-                self.status=format!("Cannot {} project: {error}",if job.saving{"save"}else{"open"});
+                let page=self.pending_page.take();self.delete_page_after_switch=false;
+                self.status=if let Some(page)=page {format!("Cannot open Page {}: {error}",page+1)}
+                    else {format!("Cannot {} project: {error}",if job.saving{"save"}else{"open"})};
                 if self.io_workspace_waiting{self.io_workspace_result=Some(Err(self.status.clone()));}
                 if self.io_after_save.take().is_some(){self.close_canceled=true;}
             }
@@ -268,8 +283,9 @@ impl A4Studio {
         egui::CentralPanel::default().show(ctx,|_|{});
         crate::ui_theme::dialog_modal(ctx, "project-io-progress").show(ctx,|ui|{
             ui.set_width(340.);
-            crate::ui_theme::dialog_header(ui,if job.saving{"Saving project"}else{"Opening project"},false);
-            ui.add(egui::Label::new(job.path.file_name().unwrap_or_default().to_string_lossy()).truncate());
+            crate::ui_theme::dialog_header(ui,if self.pending_page.is_some(){"Opening page"}else if job.saving{"Saving project"}else{"Opening project"},false);
+            if let Some(page)=self.pending_page {ui.label(format!("Page {} of {}",page+1,self.other_pages.len()+1));}
+            else {ui.add(egui::Label::new(job.path.file_name().unwrap_or_default().to_string_lossy()).truncate());}
             ui.add_space(10.);let (progress,stage)=job.stage();
             ui.add(crate::ui_theme::progress_bar(progress).animate(false));
             ui.label(stage);

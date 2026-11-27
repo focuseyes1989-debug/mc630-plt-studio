@@ -330,35 +330,40 @@ impl Preferences {
         ))
     }
 
+    #[cfg(test)]
     fn print_artwork(
         &self,
         artwork: PrintArtwork,
         page: [f64; 2],
         output: Option<&std::path::Path>,
     ) -> Result<i32, String> {
+        self.print_pages(
+            vec![PrintPage {
+                size: page,
+                artwork,
+            }],
+            output,
+        )
+    }
+    #[cfg(test)]
+    fn print_pages(
+        &self,
+        pages: Vec<PrintPage>,
+        output: Option<&std::path::Path>,
+    ) -> Result<i32, String> {
+        self.print_pages_progress(pages,output, |_|{})
+    }
+    fn print_pages_progress(&self,pages:Vec<PrintPage>,output:Option<&std::path::Path>,progress:impl Fn(usize))->Result<i32,String> {
+        if pages.is_empty() {
+            return Err("Choose at least one page.".into());
+        }
+        progress(1);
         let dc = self.dc()?;
         let (actual_w, actual_h, dpi_x, dpi_y) = page_geometry(dc.0)?;
-        validate_page_size([actual_w, actual_h], page)?;
-        let image = artwork.raster(page)?;
-        let bits = bitmap_bgra(&image);
-
-        let mut info: BITMAPINFO = unsafe { zeroed() };
-
-        info.bmiHeader = BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-
-            biWidth: image.width() as i32,
-
-            biHeight: -(image.height() as i32),
-
-            biPlanes: 1,
-
-            biBitCount: 32,
-
-            biCompression: BI_RGB,
-
-            ..unsafe { zeroed() }
-        };
+        // Validate every requested paper size before submitting any sheets.
+        for page in &pages {
+            validate_page_size([actual_w, actual_h], page.size)?;
+        }
 
         let title = wide("MC630 Sticker Print");
 
@@ -382,46 +387,71 @@ impl Preferences {
             return Err(error("Start print job"));
         }
 
+        let count=pages.len();
         let operation = (|| {
-            if unsafe { StartPage(dc.0) } <= 0 {
-                return Err(error("Start print page"));
+            for (index,PrintPage {
+                size: page,
+                artwork,
+            }) in pages.into_iter().enumerate()
+            {
+                progress(2+index*3);
+                // Only one raster is retained at a time, even for large ranges.
+                let image = artwork.raster(page)?;
+                let bits = bitmap_bgra(&image);
+                progress(3+index*3);
+                let mut info: BITMAPINFO = unsafe { zeroed() };
+                info.bmiHeader = BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: image.width() as i32,
+                    biHeight: -(image.height() as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    ..unsafe { zeroed() }
+                };
+                if unsafe { StartPage(dc.0) } <= 0 {
+                    return Err(error("Start print page"));
+                }
+
+                unsafe {
+                    SetStretchBltMode(dc.0, HALFTONE as i32);
+
+                    SetBrushOrgEx(dc.0, 0, 0, null_mut());
+                }
+
+                let result = unsafe {
+                    StretchDIBits(
+                        dc.0,
+                        -GetDeviceCaps(dc.0, PHYSICALOFFSETX as i32),
+                        -GetDeviceCaps(dc.0, PHYSICALOFFSETY as i32),
+                        (page[0] / 25.4 * dpi_x as f64).round() as i32,
+                        (page[1] / 25.4 * dpi_y as f64).round() as i32,
+                        0,
+                        0,
+                        image.width() as i32,
+                        image.height() as i32,
+                        bits.as_ptr().cast(),
+                        &info,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    )
+                };
+
+                if result <= 0 {
+                    return Err(error("Render print page"));
+                }
+
+                if unsafe { EndPage(dc.0) } <= 0 {
+                    return Err(error("Finish print page"));
+                }
+                progress(4+index*3);
             }
 
-            unsafe {
-                SetStretchBltMode(dc.0, HALFTONE as i32);
-
-                SetBrushOrgEx(dc.0, 0, 0, null_mut());
-            }
-
-            let result = unsafe {
-                StretchDIBits(
-                    dc.0,
-                    -GetDeviceCaps(dc.0, PHYSICALOFFSETX as i32),
-                    -GetDeviceCaps(dc.0, PHYSICALOFFSETY as i32),
-                    (page[0] / 25.4 * dpi_x as f64).round() as i32,
-                    (page[1] / 25.4 * dpi_y as f64).round() as i32,
-                    0,
-                    0,
-                    image.width() as i32,
-                    image.height() as i32,
-                    bits.as_ptr().cast(),
-                    &info,
-                    DIB_RGB_COLORS,
-                    SRCCOPY,
-                )
-            };
-
-            if result <= 0 {
-                return Err(error("Render print page"));
-            }
-
-            if unsafe { EndPage(dc.0) } <= 0 {
-                return Err(error("Finish print page"));
-            }
-
+            progress(2+count*3);
             if unsafe { EndDoc(dc.0) } <= 0 {
                 return Err(error("Submit print job"));
             }
+            progress(3+count*3);
 
             Ok(())
         })();
@@ -543,7 +573,11 @@ fn discover_printers() -> std::sync::mpsc::Receiver<Result<(Vec<String>, Option<
     rx
 }
 pub enum PrintArtwork {
-    Design(mc630_plt_studio::sheet::Layout, Option<mc630_plt_studio::sheet::CcdTrial>),
+    Project(Box<crate::project::Project>, bool),
+    Design(
+        mc630_plt_studio::sheet::Layout,
+        Option<mc630_plt_studio::sheet::CcdTrial>,
+    ),
     Front {
         art: std::sync::Arc<mc630_plt_studio::sheet::Artwork>,
         layout: mc630_plt_studio::sheet::Layout,
@@ -555,13 +589,70 @@ pub enum PrintArtwork {
 impl PrintArtwork {
     fn raster(self, page: [f64; 2]) -> Result<RgbaImage, String> {
         match self {
-            Self::Design(layout,ccd)=>layout.print_design_raster_with_ccd(ccd.as_ref()),
+            Self::Project(project, back) => {
+                if back {
+                    return Self::Back(project.back).raster(page);
+                }
+                let source = project.source_untraced()?;
+                let ccd = project.settings.ccd.then_some(&project.settings.profile);
+                let layout = &project.settings.layout;
+                if source.is_empty() {
+                    return Self::Design(layout.clone(), ccd.cloned()).raster(page);
+                }
+                let art = layout.trace_images(
+                    &source,
+                    project.settings.remove_white,
+                    project.settings.threshold,
+                    project.settings.cut_shape,
+                    project.settings.background_tolerance,
+                    project.settings.print_without_background,
+                )?;
+                layout.print_raster(&art, ccd)
+            }
+            Self::Design(layout, ccd) => {
+                if layout.design_shapes.is_empty() {
+                    blank_page(page)
+                } else {
+                    layout.print_design_raster_with_ccd(ccd.as_ref())
+                }
+            }
             Self::Front { art, layout, ccd } => layout.print_raster(&art, ccd.as_ref()),
-            Self::Back(data) => data.raster(page),
+            Self::Back(data) => if data.images.is_empty(){blank_page(page)}else{data.raster(page)},
         }
     }
 }
 
+fn blank_page(page:[f64;2])->Result<RgbaImage,String> {
+    if page.iter().any(|v|!v.is_finite() || *v<=0.) {return Err("Invalid print page size.".into());}
+    let [w,h]=page.map(|v|(v/25.4*300.).round() as u32);
+    if w==0 || h==0 || u64::from(w)*u64::from(h)>80_000_000 {
+        return Err("Page is too large for 300 dpi printing.".into());
+    }
+    Ok(RgbaImage::from_pixel(w,h,image::Rgba([255,255,255,255])))
+}
+
+pub struct PrintPage {
+    pub size: [f64; 2],
+    pub artwork: PrintArtwork,
+}
+
+struct PrintProgress {
+    pages:usize,
+    step:std::sync::atomic::AtomicUsize,
+}
+impl PrintProgress {
+    fn new(pages:usize)->Self {Self {pages,step:std::sync::atomic::AtomicUsize::new(0)}}
+    fn snapshot(&self)->(f32,String) {
+        let step=self.step.load(std::sync::atomic::Ordering::Relaxed);
+        let total=3*self.pages+3;
+        let label=if step>=total {"Submitted to printer queue".into()}
+            else if step==0 {"Preparing printer…".into()}
+            else if step==1 {"Checking paper size…".into()}
+            else if step>=2+3*self.pages {"Submitting print job…".into()}
+            else {let page=(step-2)/3+1;let stage=match (step-2)%3 {0=>"Preparing",1=>"Sending",_=>"Finished"};format!("{stage} page {page} of {}…",self.pages)};
+        ((step as f32/total as f32).clamp(0.,1.),label)
+    }
+}
 pub struct PrintPanel {
     discovery: Option<std::sync::mpsc::Receiver<Result<(Vec<String>, Option<String>), String>>>,
     names: Vec<String>,
@@ -571,6 +662,7 @@ pub struct PrintPanel {
     preferences: Option<Preferences>,
 
     pending: Option<std::sync::mpsc::Receiver<Result<i32, String>>>,
+    progress:std::sync::Arc<PrintProgress>,
 
     message: String,
 }
@@ -588,6 +680,7 @@ impl Default for PrintPanel {
             preferences: None,
 
             pending: None,
+            progress:std::sync::Arc::new(PrintProgress::new(0)),
 
             message: String::new(),
         }
@@ -644,15 +737,9 @@ impl PrintPanel {
         }
     }
 
-    pub fn ui(
-        &mut self,
-        ui: &mut eframe::egui::Ui,
-        layout: &mc630_plt_studio::sheet::Layout,
-        status: &mut String,
-        has_artwork: bool,
-        artwork: impl FnOnce() -> Option<PrintArtwork>,
-    ) {
+    pub fn ui(&mut self, ui: &mut eframe::egui::Ui, has_artwork: bool) -> bool {
         use eframe::egui;
+        let mut requested = false;
 
         if let Some(rx) = &self.discovery {
             match rx.try_recv() {
@@ -689,23 +776,23 @@ impl PrintPanel {
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
             let old = self.selected.clone();
             ui.horizontal(|ui| {
-            crate::ui_theme::compact_spacing(ui);
-            egui::ComboBox::from_id_salt("native_printer")
-                .selected_text(if self.selected.is_empty() {
-                    "Choose printer"
-                } else {
-                    &self.selected
-                })
-                .width((ui.available_width() - 72.).max(160.))
-                .show_ui(ui, |ui| {
-                    for name in &self.names {
-                        ui.selectable_value(&mut self.selected, name.clone(), name);
-                    }
-                });
-            if old != self.selected {
-                self.preferences = None;
-                self.message.clear();
-            }
+                crate::ui_theme::compact_spacing(ui);
+                egui::ComboBox::from_id_salt("native_printer")
+                    .selected_text(if self.selected.is_empty() {
+                        "Choose printer"
+                    } else {
+                        &self.selected
+                    })
+                    .width((ui.available_width() - 72.).max(160.))
+                    .show_ui(ui, |ui| {
+                        for name in &self.names {
+                            ui.selectable_value(&mut self.selected, name.clone(), name);
+                        }
+                    });
+                if old != self.selected {
+                    self.preferences = None;
+                    self.message.clear();
+                }
 
                 if icon_button(ui, Icon::Refresh, "Refresh printer list") {
                     if self.discovery.is_none() {
@@ -731,65 +818,162 @@ impl PrintPanel {
             });
 
             if let Some(p) = &self.preferences {
-                ui.collapsing("Printer details", |ui| { ui.small(p.summary()); });
+                ui.collapsing("Printer details", |ui| {
+                    ui.small(p.summary());
+                });
             }
             ui.add_space(4.);
             ui.separator();
             let can_print = has_artwork && !self.selected.is_empty();
-            let response = ui.horizontal(|ui| {
-                ui.add_space((ui.available_width() - 120. - ui.spacing().item_spacing.x).max(0.));
-                ui.add_enabled(can_print,
-                    egui::Button::new(egui::RichText::new("Print Sheet").color(egui::Color32::WHITE))
+            let response = ui
+                .horizontal(|ui| {
+                    ui.add_space(
+                        (ui.available_width() - 120. - ui.spacing().item_spacing.x).max(0.),
+                    );
+                    ui.add_enabled(
+                        can_print,
+                        egui::Button::new(
+                            egui::RichText::new("Print Sheet").color(egui::Color32::WHITE),
+                        )
                         .fill(crate::ui_theme::ACCENT)
-                        .min_size(egui::vec2(120., 30.)))
-            }).inner
+                        .min_size(egui::vec2(120., 30.)),
+                    )
+                })
+                .inner
                 .on_disabled_hover_text(if !has_artwork {
-                    "Add visible artwork to this side before printing."
+                    "Enter a valid page range before printing."
                 } else {
                     "Choose a printer first."
                 });
-            if response.clicked()
-                && let Some(artwork) = artwork()
-            {
-                let name = self.selected.clone();
-                let preferences = self.preferences.clone();
-                let page = [layout.page_width, layout.page_height];
-                let ctx = ui.ctx().clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = std::panic::catch_unwind(|| {
-                        let preferences = match preferences {
-                            Some(preferences) => preferences,
-                            None => Preferences::restore(&name)?,
-                        };
-                        preferences.print_artwork(artwork, page, None)
-                    })
-                    .unwrap_or_else(|_| Err("Print worker stopped unexpectedly.".into()));
-                    let _ = tx.send(result);
-                    ctx.request_repaint();
-                });
-                self.pending = Some(rx);
-                self.message = format!("Preparing print for {}…", self.selected);
-                *status = self.message.clone();
-                ui.ctx().request_repaint();
-            }
+            requested = response.clicked();
         });
 
         if self.pending.is_some() {
-            ui.spinner();
+            let (progress,stage)=self.progress.snapshot();
+            ui.add(crate::ui_theme::progress_bar(progress).animate(false));
+            ui.small(format!("{stage} · {:.0}%",progress*100.));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
 
         if !self.message.is_empty() {
             ui.small(&self.message);
         }
-
-
+        requested
+    }
+    pub fn submit(
+        &mut self,
+        pages: Result<Vec<PrintPage>, String>,
+        status: &mut String,
+        ctx: &eframe::egui::Context,
+    ) {
+        if self.pending.is_some() {
+            return;
+        }
+        {
+            let pages = match pages {
+                Ok(pages) => pages,
+                Err(error) => {
+                    self.message = error;
+                    *status = self.message.clone();
+                    return;
+                }
+            };
+            let page_count = pages.len();
+            self.progress=std::sync::Arc::new(PrintProgress::new(page_count));
+            let progress=self.progress.clone();
+            let name = self.selected.clone();
+            let preferences = self.preferences.clone();
+            let worker_ctx = ctx.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(|| {
+                    let preferences = match preferences {
+                        Some(preferences) => preferences,
+                        None => Preferences::restore(&name)?,
+                    };
+                    preferences.print_pages_progress(pages,None,|step|{
+                        progress.step.store(step,std::sync::atomic::Ordering::Relaxed);
+                    })
+                })
+                .unwrap_or_else(|_| Err("Print worker stopped unexpectedly.".into()));
+                let _ = tx.send(result);
+                worker_ctx.request_repaint();
+            });
+            self.pending = Some(rx);
+            self.message = format!("Preparing {page_count} page(s) for {}…", self.selected);
+            *status = self.message.clone();
+            ctx.request_repaint();
+        }
     }
 }
 
 #[cfg(test)]
 
 mod tests {
+    #[test]
+    fn print_progress_reports_page_and_submission_stages_without_early_completion() {
+        let progress=PrintProgress::new(2);
+        assert_eq!(progress.snapshot().0,0.);
+        progress.step.store(2,std::sync::atomic::Ordering::Relaxed);
+        assert!(progress.snapshot().1.contains("Preparing page 1 of 2"));
+        progress.step.store(6,std::sync::atomic::Ordering::Relaxed);
+        assert!(progress.snapshot().1.contains("Sending page 2 of 2"));
+        progress.step.store(8,std::sync::atomic::Ordering::Relaxed);
+        let (value,label)=progress.snapshot();assert!(value<1.);assert_eq!(label,"Submitting print job…");
+        progress.step.store(9,std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(progress.snapshot().0,1.);
+        assert_eq!(progress.snapshot().1,"Submitted to printer queue");
+    }
+    #[test]
+    fn empty_pages_in_a_range_render_as_white_sheets() {
+        for artwork in [PrintArtwork::Design(Default::default(),None),PrintArtwork::Back(Default::default())] {
+            let image=artwork.raster([25.4,25.4]).unwrap();
+            assert_eq!(image.dimensions(),(300,300));
+            assert!(image.pixels().all(|p|p.0==[255;4]));
+        }
+        assert!(blank_page([f64::NAN,297.]).is_err());
+        assert!(blank_page([10000.,10000.]).is_err());
+    }
+    #[test]
+    #[ignore = "Explicit local multi-page XPS test; never targets a physical printer"]
+    fn virtual_xps_multiple_pages() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("MC630_TEST_XPS").expect("Set MC630_TEST_XPS"),
+        );
+        assert!(!path.exists());
+        let prefs = Preferences::load("Microsoft XPS Document Writer").unwrap();
+        let art: std::sync::Arc<_> = mc630_plt_studio::sheet::artwork(
+            include_bytes!("../examples/A4-DEMO/sample-sticker.png"),
+            false,
+            245,
+        )
+        .unwrap()
+        .into();
+        let pages = (0..3)
+            .map(|i| PrintPage {
+                size: [210., 297.],
+                artwork: PrintArtwork::Front {
+                    art: art.clone(),
+                    layout: mc630_plt_studio::sheet::Layout {
+                        offset_x: 10. + i as f64 * 5.,
+                        ..Default::default()
+                    },
+                    ccd: None,
+                },
+            })
+            .collect();
+        let steps=std::cell::RefCell::new(Vec::new());
+        let job = prefs.print_pages_progress(pages, Some(&path),|step|steps.borrow_mut().push(step)).unwrap();
+        assert_eq!(*steps.borrow(),(1..=12).collect::<Vec<_>>());
+        assert!(job > 0);
+        for _ in 0..100 {
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("Virtual XPS file was not produced");
+    }
     #[test]
     fn print_page_validation_rejects_size_or_orientation_mismatch() {
         assert!(validate_page_size([297., 420.], [297., 420.]).is_ok());

@@ -57,7 +57,7 @@ impl Unit {
             .custom_parser(move |s| self.parse(s))
     }
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Preferences {
     #[serde(default)]
     pub reopen_last_project: bool,

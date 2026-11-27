@@ -15,8 +15,8 @@ impl Record {
     pub fn write(&self, path: &Path) -> Result<(), String> {
         self.project.recovery_source()?;
         let data = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        if data.len() > 64_000_000 {
-            return Err("Recovery exceeds 64 MB.".into());
+        if data.len() as u64 > crate::project::MAX_FILE {
+            return Err("Recovery exceeds 256 MB.".into());
         }
         crate::project::write_atomic(path, &data)
     }
@@ -25,11 +25,11 @@ impl Record {
         let mut data = Vec::new();
         File::open(path)
             .map_err(|e| e.to_string())?
-            .take(64_000_001)
+            .take(crate::project::MAX_FILE + 1)
             .read_to_end(&mut data)
             .map_err(|e| e.to_string())?;
-        if data.len() > 64_000_000 {
-            return Err("Recovery exceeds 64 MB.".into());
+        if data.len() as u64 > crate::project::MAX_FILE {
+            return Err("Recovery exceeds 256 MB.".into());
         }
         let record: Self = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
         record.project.recovery_source()?;
@@ -136,6 +136,8 @@ impl Drop for Store {
     }
 }
 pub struct SnapshotData {
+    pub other_pages: Vec<Project>,
+    pub active_page: usize,
     pub back: crate::duplex::BackDocument,
     pub name: String,
     pub source: Vec<u8>,
@@ -149,6 +151,7 @@ impl SnapshotData {
         let mut project = Project::new(self.name, &self.source, self.settings, self.pan);
         project.aspect_ratio = self.ratio;
         project.back = self.back;
+        project.set_pages(self.other_pages, self.active_page);
         Record {
             project,
             original_path: self.original_path,

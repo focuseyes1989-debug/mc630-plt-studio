@@ -9,7 +9,7 @@ impl A4Studio {
             hash.finish()
         };
     }
-    fn document_signature(&self) -> u64 {
+    fn current_page_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut prefs = self.preferences();
         prefs.layout = self.layout.clone();
@@ -24,6 +24,14 @@ impl A4Studio {
         serde_json::to_vec(&prefs)
             .unwrap_or_default()
             .hash(&mut hash);
+        hash.finish()
+    }
+    fn document_signature(&self) -> u64 {
+        use std::hash::{Hash,Hasher};
+        let mut hash=std::collections::hash_map::DefaultHasher::new();
+        let mut signatures=self.page_signatures.clone();
+        signatures.insert(self.active_page.min(signatures.len()),self.current_page_signature());
+        signatures.hash(&mut hash);
         hash.finish()
     }
     fn mark_saved(&mut self) {

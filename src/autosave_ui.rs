@@ -3,6 +3,8 @@ impl A4Studio {
         let mut settings = self.preferences();
         settings.layout = self.layout.clone();
         crate::recovery::SnapshotData {
+            other_pages: self.other_pages.clone(),
+            active_page: self.active_page,
             back: self.back.data.clone(),
             name: self.name.clone(),
             source: self.source.clone(),
